@@ -72,6 +72,20 @@ type StoreState = {
   clearError: () => void;
 };
 
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return fallback;
+}
+
 function replaceReviewStatus(
   proposal: AnalysisProposal,
   itemId: string,
@@ -399,10 +413,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
       }
     } catch (error) {
       set({
-        error:
-          error instanceof Error
-            ? error.message
-            : "No se pudo leer la bandeja local.",
+        error: errorMessage(error, "No se pudo leer la bandeja local."),
       });
     }
   },

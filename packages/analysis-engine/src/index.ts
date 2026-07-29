@@ -12,29 +12,28 @@ import type {
   DetectedShot,
 } from "@framesync/contracts";
 
-const sceneHeader =
-  /^(?:ESCENA|SCENE)\s*(\d+)?\s*(?:[-—:]\s*)?(.+)?$/i;
-const shotHeader =
+const sceneHeader = /^(?:ESCENA|SCENE)\b\s*(\d+)?\s*(?:[-—:]\s*)?(.+)?$/i;
+const codedShotHeader =
   /^((?:E|S)\d{1,3}-(?:P|SH)\d{1,3})\s*(?:[-—:]\s*)?(.+)?$/i;
+const plainShotHeader = /^(?:PLANO|SHOT)\s*(\d{1,3})\s*(?:[-—:]\s*)?(.+)?$/i;
 const characterHeader = /^(?:PERSONAJE|CHARACTER)\s*:\s*(.+)$/i;
-const locationHeader =
-  /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
+const locationHeader = /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
 const imagePromptHeader =
   /^(?:PROMPT\s+DE\s+IMAGEN|IMAGE\s+PROMPT)(?:\s*[-—:]\s*(.+))?$/i;
 const videoPromptHeader =
   /^(?:PROMPT\s+DE\s+VIDEO|VIDEO\s+PROMPT)(?:\s*[-—:]\s*(.+))?$/i;
-const scriptHeader = /^(?:GUI[ÓO]N|SCRIPT)(?:\s*[-—:]\s*(.+))?$/i;
+const scriptHeader =
+  /^(?:GUI[ÓO]N|SCRIPT)(?:\s+(?:PUBLICITARIO|NARRATIVO|T[ÉE]CNICO|MAESTRO))?(?:\s*[-—:]\s*(.+))?$/i;
 const noteHeader = /^(?:NOTA|NOTE)\s*:\s*(.*)$/i;
 const correctionPattern =
   /\b(cambi[áa]|cambio|reemplaz[áa]|replace|elimin[áa]|delete|divid[íi]|split)\b/i;
 const durationPattern =
-  /^(?:DURACI[ÓO]N|DURATION)\s*:\s*(\d+(?:[.,]\d+)?)\s*(?:s|seg|seconds?)?/i;
+  /^(?:DURACI[ÓO]N|DURATION)(?:\s*:\s*(\d+(?:[.,]\d+)?)\s*(?:s|seg|seconds?)?)?$/i;
 const movementPattern =
   /^(?:MOVIMIENTO|MOVEMENT|C[ÁA]MARA|CAMERA)\s*:\s*(.+)$/i;
-const sceneLocationPattern =
-  /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
+const sceneLocationPattern = /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
 const explicitHeaderPattern =
-  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE|CHARACTER|ESCENARIO|LOCACI[ÓO]N|LOCATION|ESCENA|SCENE|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
+  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE|CHARACTER|ESCENARIO|LOCACI[ÓO]N|LOCATION|ESCENA|SCENE|PLANO\s*\d+|SHOT\s*\d+|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
 
 type ParsedBlock = {
   message: CaptureMessage;
@@ -53,21 +52,52 @@ function compact(value: string | undefined | null) {
 }
 
 function splitBlocks(capture: CaptureEnvelope): ParsedBlock[] {
-  return capture.messages.flatMap((message) =>
-    message.text
+  return capture.messages.flatMap((message) => {
+    const paragraphs = message.text
       .replace(/\r\n?/g, "\n")
       .split(/\n\s*\n+/)
-      .map((text) => text.trim())
-      .filter(Boolean)
-      .map((text) => ({
-        message,
-        text,
-        lines: text
+      .map((paragraph) =>
+        paragraph
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean),
-      })),
-  );
+      )
+      .filter((lines) => lines.length > 0);
+    const grouped: ParsedBlock[] = [];
+    let current: string[] = [];
+    const flush = () => {
+      if (current.length === 0) return;
+      grouped.push({
+        message,
+        text: current.join("\n"),
+        lines: current,
+      });
+      current = [];
+    };
+    for (const lines of paragraphs) {
+      for (const line of lines) {
+        const sceneLocationMetadata =
+          current.length > 0 &&
+          sceneHeader.test(current[0] ?? "") &&
+          sceneLocationPattern.test(line);
+        const startsStructure = explicitHeaderPattern.test(line);
+        const extendsStructure =
+          current.length > 0 && explicitHeaderPattern.test(current[0] ?? "");
+        if (startsStructure && current.length > 0 && !sceneLocationMetadata) {
+          flush();
+        }
+        if (!startsStructure && !extendsStructure && current.length > 0) {
+          flush();
+        }
+        current.push(line);
+      }
+      if (current.length > 0 && !explicitHeaderPattern.test(current[0] ?? "")) {
+        flush();
+      }
+    }
+    flush();
+    return grouped;
+  });
 }
 
 function detectFraming(text: string) {
@@ -87,9 +117,8 @@ function detectFraming(text: string) {
   ];
 
   return (
-    framingTerms.find((term) =>
-      text.toLocaleLowerCase("es").includes(term),
-    ) ?? null
+    framingTerms.find((term) => text.toLocaleLowerCase("es").includes(term)) ??
+    null
   );
 }
 
@@ -103,7 +132,7 @@ function detectAngle(text: string) {
 }
 
 function parseDuration(lines: string[]) {
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     const match = line.match(durationPattern);
     const raw = match?.[1];
     if (raw) {
@@ -112,8 +141,32 @@ function parseDuration(lines: string[]) {
         return Math.round(seconds * 1_000);
       }
     }
+    if (match) {
+      const range = lines[index + 1]?.match(
+        /^(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})$/,
+      );
+      if (range) {
+        const start =
+          Number.parseInt(range[1]!, 10) * 60 + Number.parseInt(range[2]!, 10);
+        const end =
+          Number.parseInt(range[3]!, 10) * 60 + Number.parseInt(range[4]!, 10);
+        if (end > start) return (end - start) * 1_000;
+      }
+    }
   }
   return null;
+}
+
+function sectionText(lines: string[], header: RegExp, nextHeaders: RegExp) {
+  const start = lines.findIndex((line) => header.test(line));
+  if (start < 0) return null;
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (nextHeaders.test(line)) break;
+    values.push(line);
+  }
+  return compact(values.join(" "));
 }
 
 function parseMovement(lines: string[]) {
@@ -192,6 +245,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         scriptText = nextBlock.text;
         index += 1;
       }
+      if (!scriptText) continue;
       scriptCandidates.push({
         id: makeId("script", block.message, sequence),
         kind: "script",
@@ -258,9 +312,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         ? `E${String(sceneNumber).padStart(2, "0")}`
         : null;
       const body = block.lines.slice(1);
-      const locationLine = body.find((line) =>
-        sceneLocationPattern.test(line),
-      );
+      const locationLine = body.find((line) => sceneLocationPattern.test(line));
       const locationName = locationLine?.match(sceneLocationPattern)?.[1];
       const scriptFragment = body
         .filter((line) => !sceneLocationPattern.test(line))
@@ -284,30 +336,66 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       continue;
     }
 
-    const shotMatch = firstLine.match(shotHeader);
-    if (shotMatch?.[1]) {
-      const code = shotMatch[1].toUpperCase();
-      const sceneCodeFromShot =
+    const codedShotMatch = firstLine.match(codedShotHeader);
+    const plainShotMatch = firstLine.match(plainShotHeader);
+    if (codedShotMatch?.[1] || plainShotMatch?.[1]) {
+      const plainShotNumber = plainShotMatch?.[1]
+        ? Number.parseInt(plainShotMatch[1], 10)
+        : null;
+      if (!currentSceneCode && plainShotNumber) {
+        currentSceneCode = "E01";
+        scenes.push({
+          id: makeId("scene", block.message, sequence),
+          kind: "scene",
+          number: 1,
+          code: currentSceneCode,
+          title: "Storyboard importado",
+          summary:
+            "Escena creada para organizar planos numerados sin escena explícita.",
+          scriptFragment: null,
+          locationName: null,
+          orderIndex: scenes.length,
+          confidence: 0.78,
+          extractionMethod: "inferred",
+          sourceMessageIds: [block.message.id],
+          reviewStatus: "needs_review",
+        });
+      }
+      const code: string = codedShotMatch?.[1]
+        ? codedShotMatch[1].toUpperCase()
+        : `${currentSceneCode ?? "E01"}-P${String(plainShotNumber).padStart(2, "0")}`;
+      const sceneCodeFromShot: string | null =
         code.match(/^((?:E|S)\d{1,3})-/i)?.[1]?.toUpperCase() ?? null;
       currentSceneCode = sceneCodeFromShot ?? currentSceneCode;
       const sourceText = sourceLinesWithoutMetadata(block.lines);
+      const fieldHeader =
+        /^(?:DURACI[ÓO]N|TIPO DE PLANO|C[ÁA]MARA|PRIMER FRAME|PROMPT PARA GENERAR|MOVIMIENTO DEL VIDEO|SONIDO|TRANSICI[ÓO]N|TEXTO|VOZ EN OFF)\b/i;
+      const imagePrompt = sectionText(
+        block.lines,
+        /^PROMPT PARA GENERAR (?:EL )?PRIMER FRAME$/i,
+        fieldHeader,
+      );
+      const videoPrompt = sectionText(
+        block.lines,
+        /^MOVIMIENTO DEL VIDEO$/i,
+        fieldHeader,
+      );
       shots.push({
         id: makeId("shot", block.message, sequence),
         kind: "shot",
         code,
         sceneCode: currentSceneCode,
         orderIndex: shots.length,
-        title: compact(shotMatch[2]) ?? code,
+        title: compact(codedShotMatch?.[2] ?? plainShotMatch?.[2]) ?? code,
         visualDescription: compact(sourceText),
         action: compact(sourceText),
         framing: detectFraming(sourceText),
         angle: detectAngle(sourceText),
         movement: parseMovement(block.lines),
         estimatedDurationMs: parseDuration(block.lines),
-        dialogue:
-          compact(sourceText.match(/["“](.+?)["”]/)?.[1]) ?? null,
-        imagePrompt: null,
-        videoPrompt: null,
+        dialogue: compact(sourceText.match(/["“](.+?)["”]/)?.[1]) ?? null,
+        imagePrompt,
+        videoPrompt,
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
@@ -444,4 +532,3 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     ...resultWithoutSummary,
   };
 }
-

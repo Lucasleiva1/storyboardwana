@@ -39,7 +39,7 @@ type UpdatePhase =
   | "error";
 
 export function SettingsView() {
-  const [version, setVersion] = useState("0.1.1");
+  const [version, setVersion] = useState("0.1.2");
   const [integration, setIntegration] =
     useState<BrowserIntegrationStatus | null>(null);
   const [integrationBusy, setIntegrationBusy] = useState(false);

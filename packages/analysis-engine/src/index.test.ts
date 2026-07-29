@@ -35,10 +35,74 @@ describe("deterministic analysis engine", () => {
     expect(
       result.unclassified.some(
         (item) =>
-          item.kind === "unclassified" &&
-          item.reviewStatus === "needs_review",
+          item.kind === "unclassified" && item.reviewStatus === "needs_review",
       ),
     ).toBe(true);
   });
-});
 
+  it("extracts ChatGPT-style plain numbered shots and their prompt sections", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "chatgpt-plain-shot-format";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "chatgpt-plain-shot-message",
+        text: `GUIÓN PUBLICITARIO — UNA IDEA SE CONVIERTE EN MARCA
+
+Concepto general
+
+Una identidad visual se transforma en un sistema completo.
+
+PLANO 1 — EL PUNTO DE PARTIDA
+
+Duración
+
+00:00–00:03
+
+Tipo de plano
+
+Plano general gráfico, frontal y simétrico.
+
+Primer frame
+
+Pantalla negra con un punto blanco centrado.
+
+Prompt para generar el primer frame
+
+Composición minimalista tecnológica, fondo negro y punto blanco central, formato 16:9.
+
+Movimiento del video
+
+El punto vibra y dibuja una línea luminosa.
+
+PLANO 2 — CONSTRUCCIÓN DEL LOGOTIPO
+
+Duración: 4 s
+
+Tipo de plano
+
+Plano cenital de una mesa de diseño.
+
+Movimiento del video
+
+Los nodos se alinean hasta construir el símbolo.`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.scriptCandidates).toHaveLength(1);
+    expect(result.scenes).toHaveLength(1);
+    expect(result.scenes[0]?.code).toBe("E01");
+    expect(result.shots.map((shot) => shot.code)).toEqual([
+      "E01-P01",
+      "E01-P02",
+    ]);
+    expect(result.shots.map((shot) => shot.estimatedDurationMs)).toEqual([
+      3_000, 4_000,
+    ]);
+    expect(result.shots[0]?.imagePrompt).toContain("fondo negro");
+    expect(result.shots[0]?.videoPrompt).toContain("línea luminosa");
+  });
+});

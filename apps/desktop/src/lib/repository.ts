@@ -129,52 +129,45 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
     .map((message) => `[${message.role}]\n${message.text}`)
     .join("\n\n");
   const now = new Date().toISOString();
-  await db.execute("BEGIN IMMEDIATE");
-  try {
-    await db.execute(
-      `INSERT INTO capture_sources (
+  await db.execute(
+    `INSERT INTO capture_sources (
          id, project_id, platform, source_url, conversation_title, captured_at,
          capture_mode, status, fingerprint, raw_text, original_json, created_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11)
        ON CONFLICT(id) DO NOTHING`,
-      [
-        capture.captureId,
-        projectId,
-        capture.platform,
-        capture.sourceUrl,
-        capture.conversationTitle,
-        capture.capturedAt,
-        capture.captureMode,
-        capture.captureId,
-        rawText,
-        JSON.stringify(capture),
-        now,
-      ],
-    );
-    for (const message of capture.messages) {
-      await db.execute(
-        `INSERT INTO capture_messages (
+    [
+      capture.captureId,
+      projectId,
+      capture.platform,
+      capture.sourceUrl,
+      capture.conversationTitle,
+      capture.capturedAt,
+      capture.captureMode,
+      capture.captureId,
+      rawText,
+      JSON.stringify(capture),
+      now,
+    ],
+  );
+  for (const message of capture.messages) {
+    await db.execute(
+      `INSERT INTO capture_messages (
            id, capture_source_id, order_index, role, text, html_snapshot,
            message_fingerprint, source_dom_id, created_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT(id) DO NOTHING`,
-        [
-          message.id,
-          capture.captureId,
-          message.orderIndex,
-          message.role,
-          message.text,
-          message.htmlSnapshot,
-          message.messageFingerprint,
-          message.sourceDomId,
-          message.createdAt,
-        ],
-      );
-    }
-    await db.execute("COMMIT");
-  } catch (error) {
-    await db.execute("ROLLBACK");
-    throw error;
+      [
+        message.id,
+        capture.captureId,
+        message.orderIndex,
+        message.role,
+        message.text,
+        message.htmlSnapshot,
+        message.messageFingerprint,
+        message.sourceDomId,
+        message.createdAt,
+      ],
+    );
   }
 }
 
@@ -208,43 +201,36 @@ export async function saveAnalysis(
   if (!db) return;
   const runId = crypto.randomUUID();
   const now = new Date().toISOString();
-  await db.execute("BEGIN IMMEDIATE");
-  try {
-    await db.execute(
-      `INSERT INTO analysis_runs (
+  await db.execute(
+    `INSERT INTO analysis_runs (
          id, capture_source_id, engine_version, started_at, completed_at,
          status, summary, proposal_json
        ) VALUES ($1, $2, 'rules-0.1.0', $3, $3, 'completed', $4, $5)`,
-      [runId, captureId, now, proposal.summary, JSON.stringify(proposal)],
-    );
-    for (const item of proposalItems(proposal)) {
-      await db.execute(
-        `INSERT INTO detected_items (
+    [runId, captureId, now, proposal.summary, JSON.stringify(proposal)],
+  );
+  for (const item of proposalItems(proposal)) {
+    await db.execute(
+      `INSERT INTO detected_items (
            id, analysis_run_id, kind, title, payload_json, confidence,
            extraction_method, source_message_ids_json, review_status
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          item.id,
-          runId,
-          item.kind,
-          itemTitle(item),
-          JSON.stringify(item),
-          item.confidence,
-          item.extractionMethod,
-          JSON.stringify(item.sourceMessageIds),
-          item.reviewStatus,
-        ],
-      );
-    }
-    await db.execute(
-      "UPDATE capture_sources SET status = 'analyzed' WHERE id = $1",
-      [captureId],
+      [
+        item.id,
+        runId,
+        item.kind,
+        itemTitle(item),
+        JSON.stringify(item),
+        item.confidence,
+        item.extractionMethod,
+        JSON.stringify(item.sourceMessageIds),
+        item.reviewStatus,
+      ],
     );
-    await db.execute("COMMIT");
-  } catch (error) {
-    await db.execute("ROLLBACK");
-    throw error;
   }
+  await db.execute(
+    "UPDATE capture_sources SET status = 'analyzed' WHERE id = $1",
+    [captureId],
+  );
 }
 
 export async function updateAnalysis(
@@ -300,105 +286,103 @@ export async function importApproved(
     (item) => item.reviewStatus === "approved",
   );
 
-  await db.execute("BEGIN IMMEDIATE");
-  try {
-    for (const item of approvedScripts) {
-      await db.execute(
-        `INSERT OR IGNORE INTO scripts (id, project_id, created_at)
+  for (const item of approvedScripts) {
+    await db.execute(
+      `INSERT OR IGNORE INTO scripts (id, project_id, created_at)
          VALUES ($1, $2, $3)`,
-        [item.id, projectId, now],
-      );
-      await db.execute(
-        `INSERT OR IGNORE INTO script_versions (
+      [item.id, projectId, now],
+    );
+    await db.execute(
+      `INSERT OR IGNORE INTO script_versions (
            id, script_id, version_number, title, text, source_capture_id,
            approved_at, created_at
          ) VALUES ($1, $2, 1, $3, $4, $5, $6, $6)`,
-        [`${item.id}-v1`, item.id, item.title, item.text, captureId, now],
-      );
-      await db.execute(
-        "UPDATE scripts SET canonical_version_id = $1 WHERE id = $2",
-        [`${item.id}-v1`, item.id],
-      );
-    }
+      [`${item.id}-v1`, item.id, item.title, item.text, captureId, now],
+    );
+    await db.execute(
+      "UPDATE scripts SET canonical_version_id = $1 WHERE id = $2",
+      [`${item.id}-v1`, item.id],
+    );
+  }
 
-    for (const item of approvedCharacters) {
-      await db.execute(
-        `INSERT INTO characters (
+  for (const item of approvedCharacters) {
+    await db.execute(
+      `INSERT INTO characters (
            id, project_id, canonical_name, status, source_capture_id,
            created_at, updated_at
          ) VALUES ($1, $2, $3, 'approved', $4, $5, $5)
          ON CONFLICT(project_id, canonical_name) DO UPDATE SET
            status = 'approved', updated_at = excluded.updated_at`,
-        [item.id, projectId, item.name, captureId, now],
-      );
-      await db.execute(
-        `INSERT OR IGNORE INTO character_versions (
+      [item.id, projectId, item.name, captureId, now],
+    );
+    await db.execute(
+      `INSERT OR IGNORE INTO character_versions (
            id, character_id, version_number, aliases_json,
            narrative_function, physical_description, wardrobe, accessories,
            attitude, master_prompt, source_capture_id, created_at
          ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          `${item.id}-v1`,
-          item.id,
-          JSON.stringify(item.aliases),
-          item.narrativeFunction,
-          item.physicalDescription,
-          item.wardrobe,
-          item.accessories,
-          item.attitude,
-          item.masterPrompt,
-          captureId,
-          now,
-        ],
-      );
-      await db.execute(
-        "UPDATE characters SET canonical_version_id = $1 WHERE id = $2",
-        [`${item.id}-v1`, item.id],
-      );
-    }
+      [
+        `${item.id}-v1`,
+        item.id,
+        JSON.stringify(item.aliases),
+        item.narrativeFunction,
+        item.physicalDescription,
+        item.wardrobe,
+        item.accessories,
+        item.attitude,
+        item.masterPrompt,
+        captureId,
+        now,
+      ],
+    );
+    await db.execute(
+      "UPDATE characters SET canonical_version_id = $1 WHERE id = $2",
+      [`${item.id}-v1`, item.id],
+    );
+  }
 
-    for (const item of approvedLocations) {
-      await db.execute(
-        `INSERT INTO locations (
+  for (const item of approvedLocations) {
+    await db.execute(
+      `INSERT INTO locations (
            id, project_id, canonical_name, status, source_capture_id,
            created_at, updated_at
          ) VALUES ($1, $2, $3, 'approved', $4, $5, $5)
          ON CONFLICT(project_id, canonical_name) DO UPDATE SET
            status = 'approved', updated_at = excluded.updated_at`,
-        [item.id, projectId, item.name, captureId, now],
-      );
-      await db.execute(
-        `INSERT OR IGNORE INTO location_versions (
+      [item.id, projectId, item.name, captureId, now],
+    );
+    await db.execute(
+      `INSERT OR IGNORE INTO location_versions (
            id, location_id, version_number, description, atmosphere, lighting,
            permanent_elements_json, time_of_day, weather, master_prompt,
            source_capture_id, created_at
          ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          `${item.id}-v1`,
-          item.id,
-          item.description,
-          item.atmosphere,
-          item.lighting,
-          JSON.stringify(item.permanentElements),
-          item.timeOfDay,
-          item.weather,
-          item.masterPrompt,
-          captureId,
-          now,
-        ],
-      );
-      await db.execute(
-        "UPDATE locations SET canonical_version_id = $1 WHERE id = $2",
-        [`${item.id}-v1`, item.id],
-      );
-    }
+      [
+        `${item.id}-v1`,
+        item.id,
+        item.description,
+        item.atmosphere,
+        item.lighting,
+        JSON.stringify(item.permanentElements),
+        item.timeOfDay,
+        item.weather,
+        item.masterPrompt,
+        captureId,
+        now,
+      ],
+    );
+    await db.execute(
+      "UPDATE locations SET canonical_version_id = $1 WHERE id = $2",
+      [`${item.id}-v1`, item.id],
+    );
+  }
 
-    for (const item of approvedScenes) {
-      const matchingLocation = approvedLocations.find(
-        (location) => location.name === item.locationName,
-      );
-      await db.execute(
-        `INSERT INTO scenes (
+  for (const item of approvedScenes) {
+    const matchingLocation = approvedLocations.find(
+      (location) => location.name === item.locationName,
+    );
+    await db.execute(
+      `INSERT INTO scenes (
            id, project_id, source_capture_id, number, code, title, summary,
            script_fragment, location_id, order_index, created_at, updated_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
@@ -409,29 +393,29 @@ export async function importApproved(
            location_id = excluded.location_id,
            order_index = excluded.order_index,
            updated_at = excluded.updated_at`,
-        [
-          item.id,
-          projectId,
-          captureId,
-          item.number,
-          item.code,
-          item.title,
-          item.summary,
-          item.scriptFragment,
-          matchingLocation?.id ?? null,
-          item.orderIndex,
-          now,
-        ],
-      );
-    }
+      [
+        item.id,
+        projectId,
+        captureId,
+        item.number,
+        item.code,
+        item.title,
+        item.summary,
+        item.scriptFragment,
+        matchingLocation?.id ?? null,
+        item.orderIndex,
+        now,
+      ],
+    );
+  }
 
-    for (const item of approvedShots) {
-      const matchingScene = approvedScenes.find(
-        (scene) => scene.code === item.sceneCode,
-      );
-      if (!matchingScene) continue;
-      await db.execute(
-        `INSERT INTO shots (
+  for (const item of approvedShots) {
+    const matchingScene = approvedScenes.find(
+      (scene) => scene.code === item.sceneCode,
+    );
+    if (!matchingScene) continue;
+    await db.execute(
+      `INSERT INTO shots (
            id, scene_id, source_capture_id, code, order_index, title,
            visual_description, action, framing, angle, movement,
            estimated_duration_ms, dialogue, image_prompt, video_prompt,
@@ -452,36 +436,31 @@ export async function importApproved(
            image_prompt = excluded.image_prompt,
            video_prompt = excluded.video_prompt,
            updated_at = excluded.updated_at`,
-        [
-          item.id,
-          matchingScene.id,
-          captureId,
-          item.code,
-          item.orderIndex,
-          item.title,
-          item.visualDescription,
-          item.action,
-          item.framing,
-          item.angle,
-          item.movement,
-          item.estimatedDurationMs,
-          item.dialogue,
-          item.imagePrompt,
-          item.videoPrompt,
-          now,
-        ],
-      );
-    }
-
-    await db.execute(
-      "UPDATE capture_sources SET status = 'imported' WHERE id = $1",
-      [captureId],
+      [
+        item.id,
+        matchingScene.id,
+        captureId,
+        item.code,
+        item.orderIndex,
+        item.title,
+        item.visualDescription,
+        item.action,
+        item.framing,
+        item.angle,
+        item.movement,
+        item.estimatedDurationMs,
+        item.dialogue,
+        item.imagePrompt,
+        item.videoPrompt,
+        now,
+      ],
     );
-    await db.execute("COMMIT");
-  } catch (error) {
-    await db.execute("ROLLBACK");
-    throw error;
   }
+
+  await db.execute(
+    "UPDATE capture_sources SET status = 'imported' WHERE id = $1",
+    [captureId],
+  );
 }
 
 type JsonRow = { payload_json: string };
