@@ -1,0 +1,22 @@
+[CmdletBinding(SupportsShouldProcess)]
+param()
+
+$ErrorActionPreference = "Stop"
+$hostName = "com.framesync.capture"
+$registryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName"
+$manifestPath = Join-Path $env:LOCALAPPDATA "FrameSync\native-host\$hostName.json"
+
+if (Test-Path -LiteralPath $registryPath) {
+  if ($PSCmdlet.ShouldProcess($registryPath, "Eliminar registro de Native Messaging")) {
+    Remove-Item -LiteralPath $registryPath -Force
+  }
+}
+
+if (Test-Path -LiteralPath $manifestPath) {
+  if ($PSCmdlet.ShouldProcess($manifestPath, "Eliminar manifest generado")) {
+    Remove-Item -LiteralPath $manifestPath -Force
+  }
+}
+
+Write-Host "FrameSync Native Messaging Host fue desregistrado."
+

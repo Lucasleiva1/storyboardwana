@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FrameSync",
+  "version": "0.1.0",
+  "identifier": "com.framesync.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm.cmd prepare:dev && pnpm.cmd dev",
+    "beforeBuildCommand": "pnpm.cmd prepare:bundle && pnpm.cmd build:web",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "FrameSync",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1180,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "maximized": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "resources/framesync-native-host.exe": "framesync-native-host.exe",
+      "resources/extension/": "extension/"
+    },
+    "shortDescription": "Organización audiovisual local-first",
+    "longDescription": "Captura, revisa y organiza conversaciones audiovisuales en guiones, escenas y planos.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:framesync.db"]
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0QzhENzUzOUI3NUZEOEEKUldTSy9YV2JVOWZJWkMyL3BTN1dQYmwxd3VaTk1jSXNlZ250bGx5Z0c5MXlVVzhob1ErbkhSaTcK",
+      "endpoints": [
+        "https://github.com/Lucasleiva1/storyboardwana/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
