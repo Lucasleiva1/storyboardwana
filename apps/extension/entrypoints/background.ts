@@ -28,10 +28,7 @@ type PreparedAsset = {
   bytes: Uint8Array;
 };
 
-function errorResponse(
-  error: unknown,
-  recoverable = true,
-): BackgroundResponse {
+function errorResponse(error: unknown, recoverable = true): BackgroundResponse {
   const message =
     error instanceof Error ? error.message : "Ocurrió un error desconocido.";
   return { ok: false, message, recoverable };
@@ -47,7 +44,7 @@ function activeHttpTab() {
     .then(([tab]) => {
       if (!tab?.id || !tab.url?.startsWith("http")) {
         throw new Error(
-          "Abrí una página web normal antes de capturar. Chrome no permite inyectar en esta pestaña.",
+          "Abrí una página web normal antes de capturar. Edge no permite inyectar en esta pestaña.",
         );
       }
       return tab;
@@ -118,8 +115,7 @@ function nativeConnection() {
   });
   port.onDisconnect.addListener(() => {
     const detail =
-      chrome.runtime.lastError?.message ??
-      "El host nativo cerró la conexión.";
+      chrome.runtime.lastError?.message ?? "El host nativo cerró la conexión.";
     disconnectedError = new Error(detail);
     for (const waiter of pending.values()) waiter.reject(disconnectedError);
     pending.clear();
@@ -174,12 +170,7 @@ function chooseCandidateUrl(candidate: ImageCandidate) {
   const byWidth = [...candidate.srcsetCandidates].sort(
     (a, b) => (b.width ?? b.density ?? 0) - (a.width ?? a.density ?? 0),
   );
-  return (
-    byWidth[0]?.url ??
-    candidate.sourceUrl ??
-    candidate.currentSrc ??
-    null
-  );
+  return byWidth[0]?.url ?? candidate.sourceUrl ?? candidate.currentSrc ?? null;
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -267,8 +258,11 @@ async function sendCapture(capture: CaptureDraft) {
   const skippedAssets = capture.imageCandidates.length - preparedAssets.length;
   const connection = nativeConnection();
   try {
-    const { assets: _assets, imageCandidates: _candidates, ...captureHeader } =
-      capture;
+    const {
+      assets: _assets,
+      imageCandidates: _candidates,
+      ...captureHeader
+    } = capture;
     await connection.send({
       protocolVersion: 1,
       type: "capture.begin",

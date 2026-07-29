@@ -147,7 +147,7 @@ export function SourcesView() {
         <h2>La bandeja está vacía</h2>
         <p>
           Importá la captura demo desde Agregar o enviá una conversación con la
-          extensión de Chrome.
+          extensión de Edge.
         </p>
       </section>
     );

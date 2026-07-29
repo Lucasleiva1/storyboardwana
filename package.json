@@ -1,6 +1,6 @@
 {
   "name": "framesync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local-first audiovisual preproduction workspace and browser capture bridge.",
   "packageManager": "pnpm@11.17.0",

@@ -3,12 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Update } from "@tauri-apps/plugin-updater";
 import {
   CheckCircle2,
-  Chrome,
   Clipboard,
   Download,
   ExternalLink,
   FolderOpen,
   LoaderCircle,
+  PanelsTopLeft,
   RefreshCw,
   ShieldCheck,
   Unplug,
@@ -16,7 +16,7 @@ import {
 import { useEffect, useState } from "react";
 import { isTauriRuntime } from "../lib/repository";
 
-type ChromeIntegrationStatus = {
+type BrowserIntegrationStatus = {
   mode: "development" | "installed";
   extensionId: string;
   extensionPath: string | null;
@@ -24,6 +24,8 @@ type ChromeIntegrationStatus = {
   hostPath: string | null;
   hostAvailable: boolean;
   hostRegistered: boolean;
+  edgeRegistered: boolean;
+  chromeRegistered: boolean;
   manifestPath: string;
 };
 
@@ -37,9 +39,9 @@ type UpdatePhase =
   | "error";
 
 export function SettingsView() {
-  const [version, setVersion] = useState("0.1.0");
+  const [version, setVersion] = useState("0.1.1");
   const [integration, setIntegration] =
-    useState<ChromeIntegrationStatus | null>(null);
+    useState<BrowserIntegrationStatus | null>(null);
   const [integrationBusy, setIntegrationBusy] = useState(false);
   const [integrationMessage, setIntegrationMessage] = useState(
     "Comprobando el puente local…",
@@ -60,22 +62,22 @@ export function SettingsView() {
     }
     setIntegrationBusy(true);
     try {
-      const status = await invoke<ChromeIntegrationStatus>(
+      const status = await invoke<BrowserIntegrationStatus>(
         prepare
-          ? "prepare_chrome_integration"
-          : "get_chrome_integration_status",
+          ? "prepare_browser_integration"
+          : "get_browser_integration_status",
       );
       setIntegration(status);
       setIntegrationMessage(
-        status.hostRegistered && status.extensionAvailable
-          ? "Host registrado y extensión lista para cargar."
+        status.edgeRegistered && status.extensionAvailable
+          ? "Edge está registrado y la extensión está lista para cargar."
           : "La integración necesita preparación.",
       );
     } catch (error) {
       setIntegrationMessage(
         error instanceof Error
           ? error.message
-          : "No se pudo preparar la integración con Chrome.",
+          : "No se pudo preparar la integración con Edge.",
       );
     } finally {
       setIntegrationBusy(false);
@@ -162,7 +164,7 @@ export function SettingsView() {
   }
 
   async function openIntegrationTarget(
-    command: "open_extension_folder" | "open_chrome_extensions",
+    command: "open_extension_folder" | "open_edge_extensions",
   ) {
     try {
       await invoke(command);
@@ -174,7 +176,7 @@ export function SettingsView() {
   }
 
   const integrationReady =
-    integration?.hostRegistered && integration.extensionAvailable;
+    integration?.edgeRegistered && integration.extensionAvailable;
 
   return (
     <section className="settings-workspace">
@@ -183,7 +185,7 @@ export function SettingsView() {
           <span className="section-code">SISTEMA / CONFIGURACIÓN</span>
           <h1>Aplicación, extensión y actualizaciones</h1>
           <p>
-            Todo lo necesario para mantener FrameSync y el puente de Chrome
+            Todo lo necesario para mantener FrameSync y el puente de Edge
             funcionando en este equipo.
           </p>
         </div>
@@ -263,11 +265,11 @@ export function SettingsView() {
         <article className="settings-card extension-card">
           <header>
             <div className="settings-icon">
-              <Chrome size={19} />
+              <PanelsTopLeft size={19} />
             </div>
             <div>
-              <span className="section-code">CHROME NATIVE MESSAGING</span>
-              <h2>FrameSync Capture</h2>
+              <span className="section-code">MICROSOFT EDGE · CHROMIUM</span>
+              <h2>FrameSync Capture para Edge</h2>
             </div>
             <span
               className={`settings-state ${integrationReady ? "online" : "offline"}`}
@@ -293,7 +295,7 @@ export function SettingsView() {
             <div>
               <span>HOST</span>
               <strong>
-                {integration?.hostRegistered ? "REGISTRADO" : "PENDIENTE"}
+                {integration?.edgeRegistered ? "EDGE OK" : "PENDIENTE"}
               </strong>
             </div>
             <div>
@@ -320,7 +322,7 @@ export function SettingsView() {
 
           <ol className="extension-steps">
             <li>
-              Abrí <strong>chrome://extensions</strong>.
+              Abrí <strong>edge://extensions</strong>.
             </li>
             <li>
               Activá <strong>Modo de desarrollador</strong>.
@@ -354,12 +356,10 @@ export function SettingsView() {
             </button>
             <button
               className="accent-button"
-              onClick={() =>
-                void openIntegrationTarget("open_chrome_extensions")
-              }
+              onClick={() => void openIntegrationTarget("open_edge_extensions")}
             >
               <ExternalLink size={14} />
-              Abrir Chrome
+              Abrir Edge
             </button>
           </footer>
         </article>

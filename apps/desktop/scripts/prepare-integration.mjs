@@ -70,5 +70,5 @@ cpSync(extensionOutput, extensionResource, { recursive: true });
 cpSync(nativeHost, nativeHostResource);
 
 console.log(
-  `FrameSync integration prepared (${mode}): native host + Chrome extension.`,
+  `FrameSync integration prepared (${mode}): native host + Edge/Chromium extension.`,
 );

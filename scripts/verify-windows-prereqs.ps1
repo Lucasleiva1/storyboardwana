@@ -50,15 +50,15 @@ foreach ($root in $webViewRoots) {
 }
 Add-Check "WebView2" ($null -ne $webViewVersion) $(if ($webViewVersion) { $webViewVersion } else { "Instalar WebView2 Evergreen Runtime" })
 
-$chromePaths = @(
-  "C:\Program Files\Google\Chrome\Application\chrome.exe",
-  "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+$edgePaths = @(
+  "C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+  "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+  (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\Application\msedge.exe")
 )
-$chrome = $chromePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-Add-Check "Google Chrome" ($null -ne $chrome) $(if ($chrome) { $chrome } else { "Instalar Chrome" })
+$edge = $edgePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+Add-Check "Microsoft Edge" ($null -ne $edge) $(if ($edge) { $edge } else { "Instalar Edge" })
 
 $checks | Format-Table -AutoSize
 if ($checks.Status -contains "FALTA") {
   exit 1
 }
-

@@ -25,7 +25,7 @@ struct InboxCaptureSummary {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ChromeIntegrationStatus {
+struct BrowserIntegrationStatus {
     mode: &'static str,
     extension_id: &'static str,
     extension_path: Option<String>,
@@ -33,6 +33,8 @@ struct ChromeIntegrationStatus {
     host_path: Option<String>,
     host_available: bool,
     host_registered: bool,
+    edge_registered: bool,
+    chrome_registered: bool,
     manifest_path: String,
 }
 
@@ -138,9 +140,7 @@ fn installed_extension_path(app: &AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         return Ok(source);
     }
-    let destination = local_framesync_root()?
-        .join("extension")
-        .join(app.package_info().version.to_string());
+    let destination = local_framesync_root()?.join("extension").join("current");
     copy_directory(&source, &destination)?;
     Ok(destination)
 }
@@ -174,35 +174,37 @@ fn register_native_manifest(path: &Path) -> Result<(), String> {
     use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (key, _) = hkcu
-        .create_subkey(format!(
-            r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}"
-        ))
-        .map_err(|error| format!("No se pudo abrir el registro HKCU: {error}"))?;
-    key.set_value("", &path.display().to_string())
-        .map_err(|error| format!("No se pudo registrar el host de Chrome: {error}"))
+    for browser_path in [
+        r"Software\Microsoft\Edge\NativeMessagingHosts",
+        r"Software\Google\Chrome\NativeMessagingHosts",
+    ] {
+        let (key, _) = hkcu
+            .create_subkey(format!(r"{browser_path}\{NATIVE_HOST_NAME}"))
+            .map_err(|error| format!("No se pudo abrir el registro HKCU: {error}"))?;
+        key.set_value("", &path.display().to_string())
+            .map_err(|error| format!("No se pudo registrar el host del navegador: {error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
 fn register_native_manifest(_path: &Path) -> Result<(), String> {
-    Err("La integración con Chrome sólo está disponible en Windows.".to_owned())
+    Err("La integración con Edge y Chrome sólo está disponible en Windows.".to_owned())
 }
 
 #[cfg(windows)]
-fn registered_manifest_path() -> Option<PathBuf> {
+fn registered_manifest_path(browser_path: &str) -> Option<PathBuf> {
     use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu
-        .open_subkey(format!(
-            r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}"
-        ))
+        .open_subkey(format!(r"{browser_path}\{NATIVE_HOST_NAME}"))
         .ok()?;
     key.get_value::<String, _>("").ok().map(PathBuf::from)
 }
 
 #[cfg(not(windows))]
-fn registered_manifest_path() -> Option<PathBuf> {
+fn registered_manifest_path(_browser_path: &str) -> Option<PathBuf> {
     None
 }
 
@@ -228,7 +230,7 @@ fn write_native_manifest(host_path: &Path) -> Result<PathBuf, String> {
     Ok(destination)
 }
 
-fn integration_status(app: &AppHandle, prepare: bool) -> Result<ChromeIntegrationStatus, String> {
+fn integration_status(app: &AppHandle, prepare: bool) -> Result<BrowserIntegrationStatus, String> {
     let extension_path = if prepare {
         installed_extension_path(app).ok()
     } else {
@@ -239,7 +241,7 @@ fn integration_status(app: &AppHandle, prepare: bool) -> Result<ChromeIntegratio
                 let installed = local_framesync_root()
                     .ok()?
                     .join("extension")
-                    .join(app.package_info().version.to_string());
+                    .join("current");
                 installed
                     .join("manifest.json")
                     .is_file()
@@ -254,20 +256,26 @@ fn integration_status(app: &AppHandle, prepare: bool) -> Result<ChromeIntegratio
         register_native_manifest(&manifest)?;
         Some(host)
     } else {
-        registered_manifest_path()
+        registered_manifest_path(r"Software\Microsoft\Edge\NativeMessagingHosts")
+            .or_else(|| registered_manifest_path(r"Software\Google\Chrome\NativeMessagingHosts"))
             .filter(|path| path.is_file())
             .and_then(|path| read_json(&path).ok())
             .and_then(|manifest| manifest.get("path")?.as_str().map(PathBuf::from))
     };
     let expected_manifest = manifest_path()?;
-    let registered = registered_manifest_path();
-    let host_registered = registered.as_ref().is_some_and(|path| {
-        path == &expected_manifest
-            && path.is_file()
-            && host_path.as_ref().is_some_and(|host| host.is_file())
-    });
+    let edge_manifest = registered_manifest_path(r"Software\Microsoft\Edge\NativeMessagingHosts");
+    let chrome_manifest = registered_manifest_path(r"Software\Google\Chrome\NativeMessagingHosts");
+    let registration_is_valid = |registered: &Option<PathBuf>| {
+        registered.as_ref().is_some_and(|path| {
+            path == &expected_manifest
+                && path.is_file()
+                && host_path.as_ref().is_some_and(|host| host.is_file())
+        })
+    };
+    let edge_registered = registration_is_valid(&edge_manifest);
+    let chrome_registered = registration_is_valid(&chrome_manifest);
 
-    Ok(ChromeIntegrationStatus {
+    Ok(BrowserIntegrationStatus {
         mode: if cfg!(debug_assertions) {
             "development"
         } else {
@@ -280,18 +288,20 @@ fn integration_status(app: &AppHandle, prepare: bool) -> Result<ChromeIntegratio
         extension_path: extension_path.map(|path| path.display().to_string()),
         host_available: host_path.as_ref().is_some_and(|path| path.is_file()),
         host_path: host_path.map(|path| path.display().to_string()),
-        host_registered,
+        host_registered: edge_registered || chrome_registered,
+        edge_registered,
+        chrome_registered,
         manifest_path: expected_manifest.display().to_string(),
     })
 }
 
 #[tauri::command]
-fn get_chrome_integration_status(app: AppHandle) -> Result<ChromeIntegrationStatus, String> {
+fn get_browser_integration_status(app: AppHandle) -> Result<BrowserIntegrationStatus, String> {
     integration_status(&app, false)
 }
 
 #[tauri::command]
-fn prepare_chrome_integration(app: AppHandle) -> Result<ChromeIntegrationStatus, String> {
+fn prepare_browser_integration(app: AppHandle) -> Result<BrowserIntegrationStatus, String> {
     integration_status(&app, true)
 }
 
@@ -341,6 +351,42 @@ fn open_chrome_extensions() -> Result<(), String> {
         .arg("chrome://extensions/")
         .spawn()
         .map_err(|error| format!("No se pudo abrir Chrome: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_edge_extensions() -> Result<(), String> {
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let program_files = env::var_os("PROGRAMFILES").map(PathBuf::from);
+    let program_files_x86 = env::var_os("PROGRAMFILES(X86)").map(PathBuf::from);
+    let edge = [
+        local_app_data.map(|path| {
+            path.join("Microsoft")
+                .join("Edge")
+                .join("Application")
+                .join("msedge.exe")
+        }),
+        program_files.map(|path| {
+            path.join("Microsoft")
+                .join("Edge")
+                .join("Application")
+                .join("msedge.exe")
+        }),
+        program_files_x86.map(|path| {
+            path.join("Microsoft")
+                .join("Edge")
+                .join("Application")
+                .join("msedge.exe")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_file())
+    .ok_or("No se encontró Microsoft Edge en las rutas habituales.")?;
+    Command::new(edge)
+        .arg("edge://extensions/")
+        .spawn()
+        .map_err(|error| format!("No se pudo abrir Edge: {error}"))?;
     Ok(())
 }
 
@@ -488,7 +534,7 @@ pub fn run() {
         )
         .setup(|app| {
             if let Err(error) = integration_status(app.handle(), true) {
-                eprintln!("framesync-desktop: Chrome integration setup failed: {error}");
+                eprintln!("framesync-desktop: browser integration setup failed: {error}");
             }
             Ok(())
         })
@@ -497,10 +543,11 @@ pub fn run() {
             list_inbox_captures,
             read_inbox_capture,
             mark_inbox_capture_processed,
-            get_chrome_integration_status,
-            prepare_chrome_integration,
+            get_browser_integration_status,
+            prepare_browser_integration,
             open_extension_folder,
-            open_chrome_extensions
+            open_chrome_extensions,
+            open_edge_extensions
         ])
         .run(tauri::generate_context!())
         .expect("FrameSync desktop failed to start");

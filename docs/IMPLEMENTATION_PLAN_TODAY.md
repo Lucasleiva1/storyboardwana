@@ -7,7 +7,7 @@ ser un vertical slice verificable:
 
 1. la extensión detecta una página, permite revisar una captura y comprueba el
    host;
-2. el host nativo recibe el protocolo de Chrome, valida y guarda una captura
+2. el host nativo recibe el protocolo Chromium de Edge, valida y guarda una captura
    comprometida;
 3. la aplicación de escritorio detecta esa captura, conserva el original,
    ejecuta análisis determinístico y ofrece revisión;
@@ -18,10 +18,11 @@ La demostración incluida atraviesa el mismo pipeline que una captura real.
 ## Decisiones de producto
 
 - Nombre de trabajo: **FrameSync**.
-- Windows y Chrome son la plataforma prioritaria del MVP.
+- Windows y Microsoft Edge son la plataforma prioritaria del MVP; Chrome queda
+  compatible por compartir Chromium MV3.
 - La aplicación usa navegación principal horizontal. Los filtros, editores y
   detalles se despliegan hacia abajo; no hay navegación lateral persistente.
-- El side panel de Chrome es la única excepción porque es la superficie propia
+- El side panel de Edge es la única excepción porque es la superficie propia
   de la extensión.
 - La fuente original es inmutable. Las interpretaciones y sus revisiones viven
   separadas.
@@ -52,7 +53,7 @@ Salida: schemas y fixture pasan typecheck y pruebas.
 
 Salida: prueba CLI y prueba de protocolo con bytes reales.
 
-### 3. Extensión Chrome MV3
+### 3. Extensión Chromium MV3 (Edge principal)
 
 - WXT, React y side panel.
 - Service worker como único puente a `connectNative`.
@@ -106,21 +107,21 @@ Salida: uso cómodo a 1280–1440 px sin canvas infinito.
 
 ## Riesgos Windows y mitigaciones
 
-| Riesgo | Prevención |
-| --- | --- |
-| PowerShell bloquea `pnpm.ps1` | usar `pnpm.cmd`; no cambiar ExecutionPolicy global |
-| ID unpacked cambia | clave pública de desarrollo fija y registro derivado del manifest |
-| clave HKCU en vista 32/64 bits | verificar ambas vistas y mostrar la ruta resuelta |
-| espacios y acentos en rutas | `-LiteralPath`, JSON real y argumentos PowerShell tipados |
-| stdout corrompe protocolo | stdout exclusivo para frames; logs solo a stderr |
-| modo texto altera `\n` | activar modo binario al iniciar el host |
-| antivirus/CFA bloquea escrituras | escribir solo en LocalAppData y reportar `WRITE_FAILED` |
-| captura interrumpida | carpeta `.partial`, hashes y `commit.json` atómico |
-| Chrome conserva service worker viejo | comando de build, recarga explícita y diagnóstico de versión |
-| WebView2 ausente o bloqueado | verificador previo y error guiado |
-| SQLite bloqueada | WAL, busy timeout y transacciones cortas |
-| rutas largas | artifacts cortos bajo `target` y LocalAppData; no anidar copias |
-| imágenes muy grandes | chunks acotados, límites configurables y progreso |
+| Riesgo                             | Prevención                                                        |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| PowerShell bloquea `pnpm.ps1`      | usar `pnpm.cmd`; no cambiar ExecutionPolicy global                |
+| ID unpacked cambia                 | clave pública de desarrollo fija y registro derivado del manifest |
+| clave HKCU en vista 32/64 bits     | verificar ambas vistas y mostrar la ruta resuelta                 |
+| espacios y acentos en rutas        | `-LiteralPath`, JSON real y argumentos PowerShell tipados         |
+| stdout corrompe protocolo          | stdout exclusivo para frames; logs solo a stderr                  |
+| modo texto altera `\n`             | activar modo binario al iniciar el host                           |
+| antivirus/CFA bloquea escrituras   | escribir solo en LocalAppData y reportar `WRITE_FAILED`           |
+| captura interrumpida               | carpeta `.partial`, hashes y `commit.json` atómico                |
+| Edge conserva service worker viejo | comando de build, recarga explícita y diagnóstico de versión      |
+| WebView2 ausente o bloqueado       | verificador previo y error guiado                                 |
+| SQLite bloqueada                   | WAL, busy timeout y transacciones cortas                          |
+| rutas largas                       | artifacts cortos bajo `target` y LocalAppData; no anidar copias   |
+| imágenes muy grandes               | chunks acotados, límites configurables y progreso                 |
 
 ## Criterio de corte
 
@@ -128,4 +129,3 @@ Si el tiempo obliga a recortar, se preserva siempre la ruta
 extensión → host → fuente original → análisis → revisión → planos. Se posponen
 la captura completa con autoscroll, el watcher en tiempo real y la mayor parte
 del pulido visual antes que simular una conexión o perder trazabilidad.
-

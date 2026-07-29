@@ -33,12 +33,16 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
-$registryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName"
-New-Item -Path $registryPath -Force | Out-Null
-Set-Item -Path $registryPath -Value $manifestPath
+$registryPaths = @(
+  "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName",
+  "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName"
+)
+foreach ($registryPath in $registryPaths) {
+  New-Item -Path $registryPath -Force | Out-Null
+  Set-Item -Path $registryPath -Value $manifestPath
+}
 
-Write-Host "Host registrado para el usuario actual."
+Write-Host "Host registrado para Microsoft Edge y Google Chrome."
 Write-Host "Manifest: $manifestPath"
 Write-Host "Ejecutable: $resolvedHost"
 Write-Host "Extensión permitida: $ExtensionId"
-

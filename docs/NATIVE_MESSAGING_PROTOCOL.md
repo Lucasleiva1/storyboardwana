@@ -21,14 +21,17 @@ verified against the manifest byte count and SHA-256 before rename. A capture
 is importable only after `commit.json` exists and the `.partial` directory was
 atomically renamed.
 
-Chrome limits host responses to 1 MiB. FrameSync responses contain only an ACK,
+Chromium limits host responses to 1 MiB. FrameSync responses contain only an ACK,
 error code and small progress metadata. The host accepts at most 64 MiB per
 incoming native message and at most 250 MiB per asset in this MVP.
 
 Registration on Windows is per user:
 
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.framesync.capture`
+`HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.framesync.capture`
+
+The same manifest is also registered under
+`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.framesync.capture` for
+Chrome compatibility.
 
 The default value is the absolute path to the generated host manifest. The
 manifest contains one exact `allowed_origins` entry and never a wildcard.
-

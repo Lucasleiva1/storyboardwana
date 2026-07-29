@@ -6,13 +6,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 $hostName = "com.framesync.capture"
-$registryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName"
+$registryPaths = @(
+  "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName",
+  "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName"
+)
 
-if (-not (Test-Path -LiteralPath $registryPath)) {
-  throw "Chrome no encuentra el registro HKCU del host. Ejecutá register-native-host.ps1."
+foreach ($registryPath in $registryPaths) {
+  if (-not (Test-Path -LiteralPath $registryPath)) {
+    throw "Falta el registro HKCU del host: $registryPath. Ejecutá register-native-host.ps1."
+  }
 }
 
-$manifestPath = (Get-Item -LiteralPath $registryPath).GetValue("")
+$manifestPaths = $registryPaths | ForEach-Object {
+  (Get-Item -LiteralPath $_).GetValue("")
+}
+if (($manifestPaths | Select-Object -Unique).Count -ne 1) {
+  throw "Edge y Chrome no apuntan al mismo manifest nativo."
+}
+$manifestPath = $manifestPaths[0]
 if ([string]::IsNullOrWhiteSpace($manifestPath) -or -not (Test-Path -LiteralPath $manifestPath)) {
   throw "El registro existe, pero apunta a un manifest ausente: $manifestPath"
 }
@@ -64,7 +75,7 @@ if ($readLength -ne 4) {
 }
 $responseLength = [System.BitConverter]::ToUInt32($responseLengthBytes, 0)
 if ($responseLength -gt 1048576) {
-  throw "La respuesta excede el límite de Chrome."
+  throw "La respuesta excede el límite de Native Messaging."
 }
 
 $responseBytes = New-Object byte[] $responseLength
@@ -86,7 +97,7 @@ if (-not $response.ok -or $response.code -ne "OK") {
 }
 
 Write-Host "Native Messaging OK"
+Write-Host "Navegadores: Microsoft Edge y Google Chrome"
 Write-Host "Host: $($response.data.host)"
 Write-Host "Protocolo: $($response.data.protocolVersion)"
 Write-Host "Spool: $($response.data.spoolRoot)"
-

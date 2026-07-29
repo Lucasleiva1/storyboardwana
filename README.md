@@ -7,7 +7,8 @@ personajes, escenarios, escenas, planos y storyboards.
 Incluye:
 
 - aplicación Windows construida con Tauri 2, React y SQLite;
-- extensión Chrome MV3 para capturar conversaciones e imágenes;
+- extensión Chromium MV3 para Microsoft Edge (compatible con Chrome) que
+  captura conversaciones e imágenes;
 - host de Native Messaging en Rust;
 - análisis determinístico y revisión antes de importar;
 - mesa horizontal de escenas y planos;
@@ -24,7 +25,7 @@ Después de instalar:
 1. Abrí **Configuración** en FrameSync.
 2. Pulsá **Preparar conexión**.
 3. Abrí la carpeta de la extensión.
-4. En `chrome://extensions`, activá **Modo de desarrollador**.
+4. En `edge://extensions`, activá **Modo de desarrollador**.
 5. Elegí **Cargar descomprimida** y seleccioná la carpeta indicada.
 
 FrameSync registra automáticamente el host nativo en HKCU y mantiene un ID de
@@ -36,7 +37,8 @@ kdmgiohkeeehnpaccfmjgiccfbaodlhg
 
 ## Desarrollo en Windows
 
-Requisitos: Node.js 22 o superior, pnpm 11, Rust MSVC, WebView2 y Chrome.
+Requisitos: Node.js 22 o superior, pnpm 11, Rust MSVC, WebView2 y Microsoft
+Edge.
 
 ```powershell
 pnpm.cmd install
