@@ -101,8 +101,7 @@ export async function captureDocumentInjected(
         warnings.push("No hay texto seleccionado en la página activa.");
         return [] as MessageWithElement[];
       }
-      const anchor =
-        getSelection()?.anchorNode?.parentElement ?? document.body;
+      const anchor = getSelection()?.anchorNode?.parentElement ?? document.body;
       const messageFingerprint = await fingerprint(
         `unknown\n${selected}\n${location.href}`,
       );
@@ -159,9 +158,7 @@ export async function captureDocumentInjected(
     const candidates: InjectedCapture["imageCandidates"] = [];
     const imageElements = Array.from(document.images).filter(
       (image) =>
-        visible(image) &&
-        image.naturalWidth >= 96 &&
-        image.naturalHeight >= 96,
+        visible(image) && image.naturalWidth >= 96 && image.naturalHeight >= 96,
     );
     for (const [index, image] of imageElements.entries()) {
       const currentSrc = image.currentSrc || image.src || null;
@@ -191,9 +188,7 @@ export async function captureDocumentInjected(
         });
       let sourceUrl: string | null = null;
       try {
-        sourceUrl = currentSrc
-          ? new URL(currentSrc, location.href).href
-          : null;
+        sourceUrl = currentSrc ? new URL(currentSrc, location.href).href : null;
       } catch {
         sourceUrl = null;
       }
@@ -215,6 +210,7 @@ export async function captureDocumentInjected(
       const imageFingerprint = await fingerprint(sourceKey);
       candidates.push({
         id: `image-${index}-${imageFingerprint.slice(0, 16)}`,
+        kind: "image",
         messageFingerprint: owner?.message.messageFingerprint ?? null,
         sourceUrl,
         currentSrc: sourceUrl,
@@ -222,9 +218,61 @@ export async function captureDocumentInjected(
         displayedWidth: image.getBoundingClientRect().width,
         displayedHeight: image.getBoundingClientRect().height,
         alt: image.alt || null,
-        nearbyText: nearbyText || null,
+        nearbyText: nearbyText || owner?.message.text.slice(0, 2_000) || null,
+        durationMs: null,
         captureStrategy:
           srcsetCandidates.length > 0 ? "srcset" : "direct_fetch",
+      });
+    }
+    const videos = Array.from(document.querySelectorAll("video")).filter(
+      (video) => visible(video) && video.getBoundingClientRect().width >= 96,
+    );
+    for (const [index, video] of videos.entries()) {
+      const rawUrl =
+        video.currentSrc ||
+        video.src ||
+        video.querySelector("source")?.src ||
+        "";
+      let sourceUrl: string | null = null;
+      try {
+        sourceUrl = rawUrl ? new URL(rawUrl, location.href).href : null;
+      } catch {
+        sourceUrl = null;
+      }
+      if (!sourceUrl) {
+        skippedNodeCount += 1;
+        continue;
+      }
+      const owner = messages.find(
+        ({ element }) =>
+          element.contains(video) ||
+          video.closest("[data-message-author-role],article") === element,
+      );
+      const nearbyText = normalizeText(
+        video.closest("figure")?.querySelector("figcaption")?.textContent ??
+          video.getAttribute("aria-label") ??
+          owner?.message.text.slice(0, 2_000) ??
+          "",
+      );
+      const videoFingerprint = await fingerprint(
+        `${sourceUrl}\n${owner?.message.messageFingerprint ?? ""}`,
+      );
+      candidates.push({
+        id: `video-${index}-${videoFingerprint.slice(0, 16)}`,
+        kind: "video",
+        messageFingerprint: owner?.message.messageFingerprint ?? null,
+        sourceUrl,
+        currentSrc: sourceUrl,
+        srcsetCandidates: [],
+        displayedWidth: video.getBoundingClientRect().width,
+        displayedHeight: video.getBoundingClientRect().height,
+        alt: video.getAttribute("aria-label"),
+        nearbyText: nearbyText || null,
+        durationMs:
+          Number.isFinite(video.duration) && video.duration > 0
+            ? Math.round(video.duration * 1_000)
+            : null,
+        captureStrategy: "direct_fetch",
       });
     }
     return candidates;
@@ -240,8 +288,7 @@ export async function captureDocumentInjected(
       for (const item of await collectMessages()) {
         byFingerprint.set(item.message.messageFingerprint, item);
       }
-      stagnantCycles =
-        byFingerprint.size === before ? stagnantCycles + 1 : 0;
+      stagnantCycles = byFingerprint.size === before ? stagnantCycles + 1 : 0;
       scrollElement.scrollTo({ top: 0, behavior: "auto" });
       await new Promise((resolve) => setTimeout(resolve, 650));
     }
@@ -261,7 +308,10 @@ export async function captureDocumentInjected(
       ? await collectWithControlledScroll()
       : await collectMessages();
   const imageCandidates = await collectImages(messageElements);
-  if (isChatGpt && messageElements.every(({ message }) => message.role === "unknown")) {
+  if (
+    isChatGpt &&
+    messageElements.every(({ message }) => message.role === "unknown")
+  ) {
     warnings.push(
       "ChatGPT fue detectado, pero sus roles no pudieron determinarse de forma segura.",
     );
@@ -276,17 +326,13 @@ export async function captureDocumentInjected(
     conversationTitle: document.title || null,
     messages: messageElements.map(({ message }) => message),
     imageCandidates,
-    adapterId: isChatGpt
-      ? "chatgpt.semantic.v1"
-      : "generic.visible.v1",
+    adapterId: isChatGpt ? "chatgpt.semantic.v1" : "generic.visible.v1",
     skippedNodeCount,
     warnings,
   };
 }
 
-export function manageSessionInjected(
-  action: "start" | "status" | "stop",
-): {
+export function manageSessionInjected(action: "start" | "status" | "stop"): {
   active: boolean;
   count: number;
   platform: "chatgpt" | "generic";
@@ -345,9 +391,7 @@ export function manageSessionInjected(
       hashA = Math.imul(hashA ^ code, 0x01000193);
       hashB = Math.imul(hashB ^ code, 0x85ebca6b);
     }
-    return `${(hashA >>> 0).toString(16).padStart(8, "0")}${(
-      hashB >>> 0
-    )
+    return `${(hashA >>> 0).toString(16).padStart(8, "0")}${(hashB >>> 0)
       .toString(16)
       .padStart(8, "0")}`;
   }
@@ -443,4 +487,3 @@ export function manageSessionInjected(
     messages: state?.messages ?? [],
   };
 }
-

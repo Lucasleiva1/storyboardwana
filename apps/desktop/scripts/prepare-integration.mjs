@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,6 +75,39 @@ assertInsideResources(extensionResource);
 rmSync(extensionResource, { recursive: true, force: true });
 cpSync(extensionOutput, extensionResource, { recursive: true });
 cpSync(nativeHost, nativeHostResource);
+
+if (mode === "debug" && process.env.LOCALAPPDATA) {
+  const localExtensionRoot = join(
+    process.env.LOCALAPPDATA,
+    "FrameSync",
+    "extension",
+  );
+  if (existsSync(localExtensionRoot)) {
+    const outputManifest = JSON.parse(
+      readFileSync(join(extensionOutput, "manifest.json"), "utf8"),
+    );
+    const candidates = readdirSync(localExtensionRoot, {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(localExtensionRoot, entry.name))
+      .filter((candidate) => existsSync(join(candidate, "manifest.json")));
+    for (const candidate of candidates) {
+      const candidateManifest = JSON.parse(
+        readFileSync(join(candidate, "manifest.json"), "utf8"),
+      );
+      if (
+        candidateManifest.name === outputManifest.name &&
+        candidateManifest.key === outputManifest.key
+      ) {
+        cpSync(extensionOutput, candidate, {
+          recursive: true,
+          force: true,
+        });
+      }
+    }
+  }
+}
 
 console.log(
   `FrameSync integration prepared (${mode}): native host + Edge/Chromium extension.`,

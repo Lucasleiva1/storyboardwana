@@ -69,8 +69,13 @@ function flattenRows(
 }
 
 export function ScenesView() {
-  const { production, expandedShotId, setExpandedShot, updateShot } =
-    useFrameSyncStore();
+  const {
+    production,
+    importResult,
+    expandedShotId,
+    setExpandedShot,
+    updateShot,
+  } = useFrameSyncStore();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
@@ -198,6 +203,20 @@ export function ScenesView() {
           </button>
         </div>
       </header>
+      {importResult && (
+        <div className="import-result" role="status">
+          <strong>Importación verificada</strong>
+          <span>{importResult.created} planos nuevos</span>
+          <span>{importResult.repeated} repetidos omitidos</span>
+          <span>{importResult.specialCreated} especiales</span>
+          <span>{importResult.variantsCreated} variantes</span>
+          {importResult.conflicts > 0 && (
+            <span className="conflict">
+              {importResult.conflicts} conflictos sin incorporar
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="shot-table-shell">
         <div className="shot-grid shot-column-header">
@@ -302,9 +321,9 @@ function ShotRow({
           <p>{shot.visualDescription ?? "Descripción visual pendiente."}</p>
           {shot.dialogue && <q>{shot.dialogue}</q>}
         </button>
-        <StoryboardCell />
-        <MediaPlaceholder type="frame" />
-        <MediaPlaceholder type="video" />
+        <StoryboardCell count={shot.storyboardAssetCount ?? 0} />
+        <MediaPlaceholder type="frame" path={shot.firstFramePath} />
+        <MediaPlaceholder type="video" path={shot.videoPath} />
         <div className="duration-cell">
           <Clock3 size={13} />
           <strong>{formatDuration(shot.estimatedDurationMs)}</strong>
@@ -321,11 +340,11 @@ function ShotRow({
   );
 }
 
-function StoryboardCell() {
+function StoryboardCell({ count }: { count: number }) {
   return (
     <div className="storyboard-cell">
       {[1, 2, 3].map((frame) => (
-        <div key={frame}>
+        <div key={frame} className={frame <= count ? "assigned" : ""}>
           <span>{String(frame).padStart(2, "0")}</span>
           <Image size={13} />
         </div>
@@ -334,12 +353,26 @@ function StoryboardCell() {
   );
 }
 
-function MediaPlaceholder({ type }: { type: "frame" | "video" }) {
+function MediaPlaceholder({
+  type,
+  path,
+}: {
+  type: "frame" | "video";
+  path?: string | null;
+}) {
   return (
     <div className={`media-cell ${type}`}>
       <div className="safe-frame" />
       {type === "video" ? <Play size={17} /> : <Image size={16} />}
-      <span>{type === "video" ? "SIN VIDEO" : "SIN FRAME"}</span>
+      <span>
+        {path
+          ? type === "video"
+            ? "VIDEO ASIGNADO"
+            : "FRAME ASIGNADO"
+          : type === "video"
+            ? "SIN VIDEO"
+            : "SIN FRAME"}
+      </span>
     </div>
   );
 }

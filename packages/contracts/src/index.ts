@@ -29,6 +29,7 @@ export const SrcsetCandidateSchema = z.object({
 
 export const ImageCandidateSchema = z.object({
   id: z.string().min(1),
+  kind: z.enum(["image", "video"]).default("image"),
   messageFingerprint: z.string().nullable(),
   sourceUrl: z.string().url().nullable(),
   currentSrc: z.string().url().nullable(),
@@ -37,6 +38,7 @@ export const ImageCandidateSchema = z.object({
   displayedHeight: z.number().nonnegative(),
   alt: z.string().nullable(),
   nearbyText: z.string().nullable(),
+  durationMs: z.number().int().nonnegative().nullable().default(null),
   captureStrategy: z.enum(["direct_fetch", "srcset", "expanded", "screenshot"]),
 });
 
@@ -61,6 +63,8 @@ export const AssetManifestSchema = z.object({
   width: z.number().int().positive().nullable(),
   height: z.number().int().positive().nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
+  relatedShotCode: z.string().nullable().default(null),
+  localPath: z.string().nullable().default(null),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i),
   qualitySource: z.enum([
     "original",
@@ -79,6 +83,8 @@ export const CaptureEnvelopeSchema = z.object({
   conversationTitle: z.string().nullable(),
   captureMode: CaptureModeSchema,
   capturedAt: z.string().datetime(),
+  destinationProjectId: z.string().nullable().default(null),
+  destinationProjectName: z.string().nullable().default(null),
   messages: z.array(CaptureMessageSchema),
   assets: z.array(AssetManifestSchema),
   diagnostics: z.object({
@@ -135,6 +141,11 @@ export const NativeRequestSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1),
     captureId: z.string().min(1),
   }),
+  z.object({
+    protocolVersion: ProtocolVersionSchema,
+    type: z.literal("workspace.list"),
+    requestId: z.string().min(1),
+  }),
 ]);
 
 export const NativeResponseCodeSchema = z.enum([
@@ -170,6 +181,7 @@ export const ReviewStatusSchema = z.enum([
 ]);
 export const DetectedItemKindSchema = z.enum([
   "script",
+  "episode",
   "character",
   "location",
   "scene",
@@ -193,6 +205,15 @@ export const DetectedScriptSchema = ProvenanceSchema.extend({
   kind: z.literal("script"),
   title: z.string().nullable(),
   text: z.string(),
+});
+
+export const DetectedEpisodeSchema = ProvenanceSchema.extend({
+  kind: z.literal("episode"),
+  number: z.number().int().positive(),
+  code: z.string(),
+  title: z.string(),
+  summary: z.string().nullable(),
+  orderIndex: z.number().int().nonnegative(),
 });
 
 export const DetectedCharacterSchema = ProvenanceSchema.extend({
@@ -223,6 +244,7 @@ export const DetectedSceneSchema = ProvenanceSchema.extend({
   kind: z.literal("scene"),
   number: z.number().int().positive().nullable(),
   code: z.string().nullable(),
+  episodeCode: z.string().nullable().default(null),
   title: z.string(),
   summary: z.string().nullable(),
   scriptFragment: z.string().nullable(),
@@ -233,6 +255,11 @@ export const DetectedSceneSchema = ProvenanceSchema.extend({
 export const DetectedShotSchema = ProvenanceSchema.extend({
   kind: z.literal("shot"),
   code: z.string().nullable(),
+  globalNumber: z.number().int().positive().nullable().default(null),
+  shotType: z.enum(["normal", "special", "variant"]).default("normal"),
+  specialCode: z.string().nullable().default(null),
+  variantOfShotNumber: z.number().int().positive().nullable().default(null),
+  episodeCode: z.string().nullable().default(null),
   sceneCode: z.string().nullable(),
   orderIndex: z.number().int().nonnegative(),
   title: z.string(),
@@ -275,6 +302,7 @@ export const AnalysisWarningSchema = z.object({
 export const AnalysisProposalSchema = z.object({
   summary: z.string(),
   scriptCandidates: z.array(DetectedScriptSchema),
+  episodes: z.array(DetectedEpisodeSchema).default([]),
   characters: z.array(DetectedCharacterSchema),
   locations: z.array(DetectedLocationSchema),
   scenes: z.array(DetectedSceneSchema),
@@ -284,6 +312,28 @@ export const AnalysisProposalSchema = z.object({
   corrections: z.array(DetectedCorrectionSchema),
   unclassified: z.array(DetectedLooseItemSchema),
   warnings: z.array(AnalysisWarningSchema),
+});
+
+export const WorkspaceProjectSummarySchema = z.object({
+  id: z.string().min(1),
+  projectNumber: z.number().int().positive(),
+  name: z.string().min(1),
+  description: z.string().nullable().default(null),
+  episodeCount: z.number().int().nonnegative(),
+  sceneCount: z.number().int().nonnegative(),
+  shotCount: z.number().int().nonnegative(),
+  specialShotCount: z.number().int().nonnegative(),
+  lastEpisodeNumber: z.number().int().positive().nullable(),
+  lastSceneNumber: z.number().int().positive().nullable(),
+  lastShotNumber: z.number().int().nonnegative(),
+  nextShotNumber: z.number().int().positive(),
+  updatedAt: z.string(),
+});
+
+export const WorkspaceContextSchema = z.object({
+  protocolVersion: ProtocolVersionSchema,
+  generatedAt: z.string(),
+  projects: z.array(WorkspaceProjectSummarySchema),
 });
 
 export type Platform = z.infer<typeof PlatformSchema>;
@@ -298,6 +348,7 @@ export type CaptureEnvelopeWithoutAssets = z.infer<
 export type NativeRequest = z.infer<typeof NativeRequestSchema>;
 export type NativeResponse = z.infer<typeof NativeResponseSchema>;
 export type DetectedScript = z.infer<typeof DetectedScriptSchema>;
+export type DetectedEpisode = z.infer<typeof DetectedEpisodeSchema>;
 export type DetectedCharacter = z.infer<typeof DetectedCharacterSchema>;
 export type DetectedLocation = z.infer<typeof DetectedLocationSchema>;
 export type DetectedScene = z.infer<typeof DetectedSceneSchema>;
@@ -307,4 +358,7 @@ export type DetectedCorrection = z.infer<typeof DetectedCorrectionSchema>;
 export type DetectedLooseItem = z.infer<typeof DetectedLooseItemSchema>;
 export type AnalysisWarning = z.infer<typeof AnalysisWarningSchema>;
 export type AnalysisProposal = z.infer<typeof AnalysisProposalSchema>;
-
+export type WorkspaceProjectSummary = z.infer<
+  typeof WorkspaceProjectSummarySchema
+>;
+export type WorkspaceContext = z.infer<typeof WorkspaceContextSchema>;

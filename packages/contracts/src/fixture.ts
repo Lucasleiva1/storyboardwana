@@ -93,6 +93,8 @@ export const DEMO_CAPTURE: CaptureEnvelope = {
   conversationTitle: "La última frecuencia — captura de demostración",
   captureMode: "loaded",
   capturedAt,
+  destinationProjectId: null,
+  destinationProjectName: null,
   messages: sourceMessages.map((message, index) => ({
     id: `demo-message-${index + 1}`,
     orderIndex: index,
@@ -114,4 +116,3 @@ export const DEMO_CAPTURE: CaptureEnvelope = {
     ],
   },
 };
-

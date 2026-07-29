@@ -21,7 +21,7 @@ describe("deterministic analysis engine", () => {
 
   it("leaves missing duration empty", () => {
     const result = analyzeCapture(DEMO_CAPTURE);
-    const shot = result.shots.find((item) => item.code === "E01-P03");
+    const shot = result.shots.find((item) => item.code === "P003");
 
     expect(shot?.estimatedDurationMs).toBeNull();
     expect(
@@ -95,14 +95,102 @@ Los nodos se alinean hasta construir el símbolo.`,
     expect(result.scriptCandidates).toHaveLength(1);
     expect(result.scenes).toHaveLength(1);
     expect(result.scenes[0]?.code).toBe("E01");
-    expect(result.shots.map((shot) => shot.code)).toEqual([
-      "E01-P01",
-      "E01-P02",
-    ]);
+    expect(result.shots.map((shot) => shot.code)).toEqual(["P001", "P002"]);
+    expect(result.shots.map((shot) => shot.globalNumber)).toEqual([1, 2]);
     expect(result.shots.map((shot) => shot.estimatedDurationMs)).toEqual([
       3_000, 4_000,
     ]);
     expect(result.shots[0]?.imagePrompt).toContain("fondo negro");
     expect(result.shots[0]?.videoPrompt).toContain("línea luminosa");
+  });
+
+  it("keeps episodes and normalizes scene-local shot numbers globally", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "episode-global-numbering";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "episode-global-numbering-message",
+        text: `EPISODIO 1 — Inicio
+
+ESCENA 1 — Exterior
+
+PLANO 1 — Llegada
+La protagonista llega.
+
+PLANO 2 — Puerta
+Abre la puerta.
+
+ESCENA 2 — Interior
+
+PLANO 1 — Pasillo
+Entra al pasillo.
+
+PLANO 2 — Habitación
+Mira la habitación.`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.episodes.map((episode) => episode.code)).toEqual(["EP01"]);
+    expect(result.scenes.map((scene) => scene.episodeCode)).toEqual([
+      "EP01",
+      "EP01",
+    ]);
+    expect(result.shots.map((shot) => shot.code)).toEqual([
+      "P001",
+      "P002",
+      "P003",
+      "P004",
+    ]);
+    expect(result.shots.map((shot) => shot.episodeCode)).toEqual([
+      "EP01",
+      "EP01",
+      "EP01",
+      "EP01",
+    ]);
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "LEGACY_SCENE_NUMBERING_NORMALIZED",
+      ),
+    ).toBe(true);
+  });
+
+  it("separates special shots and variants from the normal sequence", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "special-and-variant-shots";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "special-and-variant-message",
+        text: `ESCENA 1 — Prueba
+
+P001 — Plano normal
+Acción principal.
+
+PLANO ESPECIAL — Inserto
+Textura abstracta.
+
+VARIANTE DE PLANO 1 — Alternativa
+La misma acción desde otro ángulo.`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.shots.map((shot) => shot.shotType)).toEqual([
+      "normal",
+      "special",
+      "variant",
+    ]);
+    expect(result.shots.map((shot) => shot.globalNumber)).toEqual([
+      1,
+      null,
+      null,
+    ]);
+    expect(result.shots[2]?.variantOfShotNumber).toBe(1);
   });
 });

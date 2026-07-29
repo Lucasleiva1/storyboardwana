@@ -55,6 +55,8 @@ struct CaptureEnvelopeWithoutAssets {
     conversation_title: Option<String>,
     capture_mode: String,
     captured_at: String,
+    destination_project_id: Option<String>,
+    destination_project_name: Option<String>,
     messages: Vec<CaptureMessage>,
     diagnostics: CaptureDiagnostics,
 }
@@ -73,6 +75,8 @@ struct AssetManifest {
     width: Option<u32>,
     height: Option<u32>,
     duration_ms: Option<u64>,
+    related_shot_code: Option<String>,
+    local_path: Option<String>,
     sha256: String,
     quality_source: String,
 }
@@ -121,6 +125,11 @@ enum NativeRequest {
         request_id: String,
         capture_id: String,
     },
+    #[serde(rename = "workspace.list", rename_all = "camelCase")]
+    WorkspaceList {
+        protocol_version: u8,
+        request_id: String,
+    },
 }
 
 impl NativeRequest {
@@ -143,6 +152,9 @@ impl NativeRequest {
             }
             | Self::CaptureCommit {
                 protocol_version, ..
+            }
+            | Self::WorkspaceList {
+                protocol_version, ..
             } => *protocol_version,
         }
     }
@@ -155,6 +167,7 @@ impl NativeRequest {
             | Self::AssetChunk { request_id, .. }
             | Self::AssetEnd { request_id, .. }
             | Self::CaptureCommit { request_id, .. } => request_id,
+            Self::WorkspaceList { request_id, .. } => request_id,
         }
     }
 }
@@ -294,6 +307,7 @@ impl HostState {
                 capture_id,
                 ..
             } => self.capture_commit(request_id, &capture_id),
+            NativeRequest::WorkspaceList { request_id, .. } => self.workspace_list(request_id),
         };
 
         result.unwrap_or_else(|error| {
@@ -309,6 +323,32 @@ impl HostState {
                 "FrameSync could not store the capture. Check LocalAppData access.",
             )
         })
+    }
+
+    fn workspace_list(&self, request_id: String) -> io::Result<NativeResponse> {
+        let path = self
+            .inbox_root
+            .parent()
+            .ok_or_else(|| io::Error::other("FrameSync root is unavailable."))?
+            .join("workspace-context.json");
+        if !path.is_file() {
+            return Ok(NativeResponse::ok_with_data(
+                request_id,
+                "No FrameSync projects are published yet.",
+                json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "generatedAt": "",
+                    "projects": [],
+                }),
+            ));
+        }
+        let bytes = fs::read(path)?;
+        let context: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        Ok(NativeResponse::ok_with_data(
+            request_id,
+            "FrameSync project context loaded.",
+            context,
+        ))
     }
 
     fn capture_begin(
@@ -590,6 +630,8 @@ fn validate_capture(capture: &CaptureEnvelopeWithoutAssets) -> Result<(), &'stat
     }
     let _ = (
         &capture.conversation_title,
+        &capture.destination_project_id,
+        &capture.destination_project_name,
         capture.diagnostics.skipped_node_count,
         &capture.diagnostics.warnings,
     );
@@ -617,8 +659,8 @@ fn validate_asset(asset: &AssetManifest) -> Result<(), &'static str> {
     if asset.sha256.len() != 64 || !asset.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Asset SHA-256 is invalid.");
     }
-    if !asset.mime_type.starts_with("image/") {
-        return Err("Only image assets are accepted in this MVP.");
+    if !asset.mime_type.starts_with("image/") && !asset.mime_type.starts_with("video/") {
+        return Err("Only image and video assets are accepted.");
     }
     let _ = (
         &asset.message_fingerprint,
@@ -629,6 +671,8 @@ fn validate_asset(asset: &AssetManifest) -> Result<(), &'static str> {
         asset.width,
         asset.height,
         asset.duration_ms,
+        &asset.related_shot_code,
+        &asset.local_path,
         &asset.quality_source,
     );
     Ok(())
@@ -656,6 +700,9 @@ fn extension_for_mime(mime: &str) -> &'static str {
         "image/webp" => "webp",
         "image/gif" => "gif",
         "image/avif" => "avif",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
         _ => "jpg",
     }
 }

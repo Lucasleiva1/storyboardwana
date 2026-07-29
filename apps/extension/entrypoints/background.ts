@@ -3,6 +3,7 @@ import {
   CaptureEnvelopeSchema,
   NativeRequestSchema,
   NativeResponseSchema,
+  WorkspaceContextSchema,
   type AssetManifest,
   type ImageCandidate,
   type NativeRequest,
@@ -21,7 +22,7 @@ import type {
 
 const HOST_NAME = "com.framesync.capture";
 const RAW_CHUNK_BYTES = 256 * 1024;
-const MAX_EXTENSION_ASSET_BYTES = 50 * 1024 * 1024;
+const MAX_EXTENSION_ASSET_BYTES = 200 * 1024 * 1024;
 
 type PreparedAsset = {
   manifest: AssetManifest;
@@ -166,6 +167,20 @@ async function pingHost() {
   }
 }
 
+async function listWorkspace() {
+  const connection = nativeConnection();
+  try {
+    const response = await connection.send({
+      protocolVersion: 1,
+      type: "workspace.list",
+      requestId: requestId("workspace-list"),
+    });
+    return WorkspaceContextSchema.parse(response.data);
+  } finally {
+    connection.disconnect();
+  }
+}
+
 function chooseCandidateUrl(candidate: ImageCandidate) {
   const byWidth = [...candidate.srcsetCandidates].sort(
     (a, b) => (b.width ?? b.density ?? 0) - (a.width ?? a.density ?? 0),
@@ -208,7 +223,8 @@ async function prepareAsset(
   const mimeType =
     response.headers.get("content-type")?.split(";")[0]?.trim() ??
     "application/octet-stream";
-  if (!mimeType.startsWith("image/")) return null;
+  const expectedMimePrefix = candidate.kind === "video" ? "video/" : "image/";
+  if (!mimeType.startsWith(expectedMimePrefix)) return null;
   const hash = await sha256(bytes);
   const filename = (() => {
     try {
@@ -218,11 +234,28 @@ async function prepareAsset(
       return null;
     }
   })();
+  const contextText = `${candidate.nearbyText ?? ""}\n${candidate.alt ?? ""}`;
+  const shotMatch = contextText.match(
+    /(?:(?:E|S)\d{1,3}\s*[-–—]\s*)?(?:P|PLANO|SH|SHOT)\s*[-:]?\s*(\d{1,4})/i,
+  );
+  const relatedShotCode = shotMatch?.[1]
+    ? `P${String(Number.parseInt(shotMatch[1], 10)).padStart(3, "0")}`
+    : null;
+  const role =
+    candidate.kind === "video" || /\bvideo\s+final\b/i.test(contextText)
+      ? "video_final"
+      : /\b(?:primer|first)\s+frame\b/i.test(contextText)
+        ? "first_frame"
+        : /\b(?:[úu]ltimo|last)\s+frame\b/i.test(contextText)
+          ? "last_frame"
+          : /\bstoryboard\b/i.test(contextText)
+            ? "storyboard"
+            : "unassigned";
   const manifest = AssetManifestSchema.parse({
     id: candidate.id.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 128),
     messageFingerprint: candidate.messageFingerprint,
-    kind: "image",
-    role: "unassigned",
+    kind: candidate.kind,
+    role,
     originalFilename: filename,
     sourceUrl: url,
     mimeType,
@@ -235,7 +268,9 @@ async function prepareAsset(
       candidate.displayedHeight > 0
         ? Math.round(candidate.displayedHeight)
         : null,
-    durationMs: null,
+    durationMs: candidate.durationMs,
+    relatedShotCode,
+    localPath: null,
     sha256: hash,
     qualitySource:
       candidate.srcsetCandidates.length > 0
@@ -245,7 +280,11 @@ async function prepareAsset(
   return { manifest, bytes };
 }
 
-async function sendCapture(capture: CaptureDraft) {
+async function sendCapture(
+  capture: CaptureDraft,
+  destinationProjectId: string,
+  destinationProjectName: string,
+) {
   if (capture.messages.length === 0) {
     throw new Error("La captura está vacía y no se enviará.");
   }
@@ -258,11 +297,16 @@ async function sendCapture(capture: CaptureDraft) {
   const skippedAssets = capture.imageCandidates.length - preparedAssets.length;
   const connection = nativeConnection();
   try {
+    const routedCapture = CaptureEnvelopeSchema.parse({
+      ...capture,
+      destinationProjectId,
+      destinationProjectName,
+    });
     const {
       assets: _assets,
       imageCandidates: _candidates,
       ...captureHeader
-    } = capture;
+    } = routedCapture as CaptureDraft;
     await connection.send({
       protocolVersion: 1,
       type: "capture.begin",
@@ -380,6 +424,8 @@ export default defineBackground(() => {
           switch (request.type) {
             case "host.ping":
               return { ok: true, native: await pingHost() };
+            case "workspace.list":
+              return { ok: true, workspace: await listWorkspace() };
             case "capture.page":
               return {
                 ok: true,
@@ -388,7 +434,11 @@ export default defineBackground(() => {
             case "capture.send":
               return {
                 ok: true,
-                sent: await sendCapture(request.capture),
+                sent: await sendCapture(
+                  request.capture,
+                  request.destinationProjectId,
+                  request.destinationProjectName,
+                ),
               };
             case "session.control":
               return controlSession(request.action);

@@ -6,17 +6,21 @@ import {
   FileInput,
   FileSearch,
   RotateCcw,
+  ShieldAlert,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AnalysisProposal } from "@framesync/contracts";
 import { useFrameSyncStore } from "../store";
+import type { SourceEntry } from "../types";
 
 type SourceTab = "original" | "summary" | "structure";
 type ReviewGroup =
   | "all"
   | "script"
+  | "episodes"
   | "characters"
   | "locations"
   | "scenes"
@@ -45,6 +49,13 @@ function itemsFromProposal(
       group: "script" as const,
       label: item.title ?? "Guion detectado",
       detail: item.text,
+      method: item.extractionMethod,
+    })),
+    ...proposal.episodes.map((item) => ({
+      ...item,
+      group: "episodes" as const,
+      label: `${item.code} · ${item.title}`,
+      detail: item.summary ?? "Sin resumen",
       method: item.extractionMethod,
     })),
     ...proposal.characters.map((item) => ({
@@ -110,6 +121,7 @@ function itemsFromProposal(
 const groups: Array<{ id: ReviewGroup; label: string }> = [
   { id: "all", label: "Todo" },
   { id: "script", label: "Guion" },
+  { id: "episodes", label: "Episodios" },
   { id: "characters", label: "Personajes" },
   { id: "locations", label: "Escenarios" },
   { id: "scenes", label: "Escenas" },
@@ -126,11 +138,15 @@ export function SourcesView() {
     analyzeSource,
     reviewItem,
     approveAllCertain,
+    createStoryboard,
     importReviewed,
+    deleteSource,
+    production,
     busy,
   } = useFrameSyncStore();
   const [tab, setTab] = useState<SourceTab>("original");
   const [group, setGroup] = useState<ReviewGroup>("all");
+  const [deleteTarget, setDeleteTarget] = useState<SourceEntry | null>(null);
   const selected =
     sources.find((source) => source.capture.captureId === selectedSourceId) ??
     sources[0];
@@ -158,38 +174,70 @@ export function SourcesView() {
         (item) => item.reviewStatus === "approved",
       ).length
     : 0;
+  const targetHasImportedContent = deleteTarget
+    ? [
+        ...production.scripts,
+        ...production.characters,
+        ...production.locations,
+        ...production.episodes,
+        ...production.scenes,
+        ...production.shots,
+      ].some((item) =>
+        item.sourceMessageIds.includes(deleteTarget.capture.captureId),
+      )
+    : false;
+
+  function confirmDelete(removeImportedContent: boolean) {
+    if (!deleteTarget) return;
+    const captureId = deleteTarget.capture.captureId;
+    setDeleteTarget(null);
+    void deleteSource(captureId, removeImportedContent);
+  }
 
   return (
     <div className="sources-workspace">
       <div className="source-rail" role="list">
         {sources.map((source) => (
-          <button
+          <div
             role="listitem"
             key={source.capture.captureId}
-            className={
+            className={`source-rail-item ${
               source.capture.captureId === selected.capture.captureId
                 ? "active"
                 : ""
-            }
-            onClick={() => selectSource(source.capture.captureId)}
+            }`}
           >
-            <span className={`platform-mark ${source.capture.platform}`}>
-              {source.capture.platform.slice(0, 2).toUpperCase()}
-            </span>
-            <span>
-              <strong>
-                {source.capture.conversationTitle ?? "Captura sin título"}
-              </strong>
-              <small>
-                {source.capture.messages.length} mensajes ·{" "}
-                {source.capture.assets.length} medios
-              </small>
-            </span>
-            <span className={`source-state ${source.status}`}>
-              {source.status}
-            </span>
-            <ChevronRight size={14} />
-          </button>
+            <button
+              className="source-open"
+              onClick={() => selectSource(source.capture.captureId)}
+            >
+              <span className={`platform-mark ${source.capture.platform}`}>
+                {source.capture.platform.slice(0, 2).toUpperCase()}
+              </span>
+              <span>
+                <strong>
+                  {source.capture.conversationTitle ?? "Captura sin título"}
+                </strong>
+                <small>
+                  {source.capture.messages.length} mensajes ·{" "}
+                  {source.capture.assets.length} medios
+                </small>
+              </span>
+              <span className={`source-state ${source.status}`}>
+                {source.status}
+              </span>
+              <ChevronRight size={14} />
+            </button>
+            <button
+              className="source-delete"
+              aria-label={`Eliminar ${source.capture.conversationTitle ?? "fuente"}`}
+              title="Eliminar fuente"
+              onClick={() => setDeleteTarget(source)}
+              disabled={busy}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
       </div>
 
@@ -212,26 +260,36 @@ export function SourcesView() {
               disabled={busy}
             >
               <RotateCcw size={14} />
-              {selected.proposal ? "Volver a analizar" : "Analizar fuente"}
+              {selected.proposal ? "Volver a analizar" : "1. Analizar fuente"}
             </button>
             <button
-              className="accent-button"
-              onClick={() => void approveAllCertain(selected.capture.captureId)}
+              className="solid-button create-storyboard-button"
+              onClick={() => void createStoryboard(selected.capture.captureId)}
               disabled={!selected.proposal || busy}
             >
               <Sparkles size={14} />
-              Aprobar alta confianza
-            </button>
-            <button
-              className="solid-button"
-              onClick={() => void importReviewed(selected.capture.captureId)}
-              disabled={approvedCount === 0 || busy}
-            >
-              <FileInput size={14} />
-              Importar {approvedCount || ""}
+              Crear guion y storyboard
             </button>
           </div>
         </header>
+
+        <div className="source-workflow">
+          <span>
+            <b>1</b> Analizar
+          </span>
+          <ChevronRight size={13} />
+          <span>
+            <b>2</b> Revisar <em>opcional</em>
+          </span>
+          <ChevronRight size={13} />
+          <span>
+            <b>3</b> Crear guion y storyboard
+          </span>
+          <small>
+            Crear envía el texto a Guion y genera las escenas y planos
+            detectados.
+          </small>
+        </div>
 
         <div className="down-tabs" role="tablist">
           {(
@@ -289,6 +347,7 @@ export function SourcesView() {
                 <div className="summary-grid">
                   {[
                     ["Guiones", selected.proposal.scriptCandidates.length],
+                    ["Episodios", selected.proposal.episodes.length],
                     ["Personajes", selected.proposal.characters.length],
                     ["Escenarios", selected.proposal.locations.length],
                     ["Escenas", selected.proposal.scenes.length],
@@ -343,6 +402,31 @@ export function SourcesView() {
               </div>
             ) : (
               <>
+                <div className="review-bulk-actions">
+                  <button
+                    className="accent-button"
+                    onClick={() =>
+                      void approveAllCertain(selected.capture.captureId)
+                    }
+                    disabled={busy}
+                  >
+                    <Check size={14} />
+                    Marcar alta confianza como aprobada
+                  </button>
+                  <button
+                    onClick={() =>
+                      void importReviewed(selected.capture.captureId)
+                    }
+                    disabled={approvedCount === 0 || busy}
+                  >
+                    <FileInput size={14} />
+                    Importar sólo los {approvedCount} aprobados
+                  </button>
+                  <small>
+                    Opciones avanzadas; no hacen falta para usar Crear guion y
+                    storyboard.
+                  </small>
+                </div>
                 <div className="review-filters">
                   {groups.map((item) => {
                     const count = itemsFromProposal(
@@ -443,6 +527,58 @@ export function SourcesView() {
           </div>
         )}
       </section>
+      {deleteTarget && (
+        <div
+          className="source-delete-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setDeleteTarget(null);
+          }}
+        >
+          <section
+            className="source-delete-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-source-title"
+          >
+            <div className="delete-dialog-icon">
+              <ShieldAlert size={22} />
+            </div>
+            <div>
+              <span className="section-code">ELIMINAR FUENTE</span>
+              <h2 id="delete-source-title">
+                {deleteTarget.capture.conversationTitle ?? "Captura sin título"}
+              </h2>
+              <p>
+                La captura dejará de aparecer en este proyecto. Elegí si querés
+                conservar o retirar también la estructura que ya generó.
+              </p>
+            </div>
+            <div className="source-delete-options">
+              <button onClick={() => setDeleteTarget(null)}>Cancelar</button>
+              <button onClick={() => confirmDelete(false)} disabled={busy}>
+                Quitar sólo la fuente
+                <small>
+                  Conserva guion, episodios, escenas, planos y medios asignados.
+                </small>
+              </button>
+              <button
+                className="destructive"
+                onClick={() => confirmDelete(true)}
+                disabled={busy || !targetHasImportedContent}
+              >
+                <Trash2 size={14} />
+                Eliminar fuente y contenido
+                <small>
+                  {targetHasImportedContent
+                    ? "Retira lo que esta fuente importó. No se puede deshacer."
+                    : "Esta fuente todavía no creó contenido de producción."}
+                </small>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

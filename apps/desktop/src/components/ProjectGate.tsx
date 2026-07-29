@@ -3,7 +3,7 @@ import { FormEvent, useState } from "react";
 import { useFrameSyncStore } from "../store";
 
 export function ProjectGate() {
-  const [name, setName] = useState("La última frecuencia");
+  const [name, setName] = useState("");
   const { createProject, importDemo, setActiveView, busy } =
     useFrameSyncStore();
 
@@ -61,9 +61,10 @@ export function ProjectGate() {
             id="project-name"
             value={name}
             onChange={(event) => setName(event.target.value)}
+            placeholder="Opcional · se asignará un nombre automático"
             autoFocus
           />
-          <button className="primary-action" disabled={busy || !name.trim()}>
+          <button className="primary-action" disabled={busy}>
             Crear proyecto
             <ArrowRight size={16} />
           </button>

@@ -4,6 +4,7 @@ import type {
   CaptureMessage,
   DetectedCharacter,
   DetectedCorrection,
+  DetectedEpisode,
   DetectedLocation,
   DetectedLooseItem,
   DetectedPrompt,
@@ -13,9 +14,15 @@ import type {
 } from "@framesync/contracts";
 
 const sceneHeader = /^(?:ESCENA|SCENE)\b\s*(\d+)?\s*(?:[-—:]\s*)?(.+)?$/i;
+const episodeHeader = /^(?:EPISODIO|EPISODE)\b\s*(\d+)?\s*(?:[-—:]\s*)?(.+)?$/i;
 const codedShotHeader =
   /^((?:E|S)\d{1,3}-(?:P|SH)\d{1,3})\s*(?:[-—:]\s*)?(.+)?$/i;
+const directShotHeader = /^((?:P|SH)\d{1,4})\s*(?:[-—:]\s*)?(.+)?$/i;
 const plainShotHeader = /^(?:PLANO|SHOT)\s*(\d{1,3})\s*(?:[-—:]\s*)?(.+)?$/i;
+const specialShotHeader =
+  /^(?:PLANO|SHOT)\s+(?:ESPECIAL|SPECIAL)(?:\s+((?:ESP|SPECIAL)-?\d+))?\s*(?:[-—:]\s*)?(.+)?$/i;
+const variantShotHeader =
+  /^(?:VARIANTE|VARIANT)\s+(?:DE|OF)\s+(?:PLANO\s+)?(?:P|SH)?(\d{1,4})\s*(?:[-—:]\s*)?(.+)?$/i;
 const characterHeader = /^(?:PERSONAJE|CHARACTER)\s*:\s*(.+)$/i;
 const locationHeader = /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
 const imagePromptHeader =
@@ -33,7 +40,7 @@ const movementPattern =
   /^(?:MOVIMIENTO|MOVEMENT|C[ÁA]MARA|CAMERA)\s*:\s*(.+)$/i;
 const sceneLocationPattern = /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
 const explicitHeaderPattern =
-  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE|CHARACTER|ESCENARIO|LOCACI[ÓO]N|LOCATION|ESCENA|SCENE|PLANO\s*\d+|SHOT\s*\d+|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
+  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE|CHARACTER|ESCENARIO|LOCACI[ÓO]N|LOCATION|EPISODIO|EPISODE|ESCENA|SCENE|PLANO\s+(?:\d+|ESPECIAL)|SHOT\s+(?:\d+|SPECIAL)|(?:P|SH)\d{1,4}|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|VARIANTE|VARIANT|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
 
 type ParsedBlock = {
   message: CaptureMessage;
@@ -49,6 +56,13 @@ function makeId(kind: string, message: CaptureMessage, sequence: number) {
 function compact(value: string | undefined | null) {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function canonicalShotReference(value: string | undefined | null) {
+  if (!value) return null;
+  const match = value.match(/(?:(?:E|S)\d{1,3}-)?(?:P|SH)(\d{1,4})/i);
+  if (!match?.[1]) return null;
+  return `P${String(Number.parseInt(match[1], 10)).padStart(3, "0")}`;
 }
 
 function splitBlocks(capture: CaptureEnvelope): ParsedBlock[] {
@@ -204,6 +218,7 @@ function proposalSummary(proposal: Omit<AnalysisProposal, "summary">) {
   const entityCount =
     proposal.characters.length +
     proposal.locations.length +
+    proposal.episodes.length +
     proposal.scenes.length +
     proposal.shots.length +
     proposal.imagePrompts.length +
@@ -214,6 +229,7 @@ function proposalSummary(proposal: Omit<AnalysisProposal, "summary">) {
 export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
   const blocks = splitBlocks(capture);
   const scriptCandidates: DetectedScript[] = [];
+  const episodes: DetectedEpisode[] = [];
   const characters: DetectedCharacter[] = [];
   const locations: DetectedLocation[] = [];
   const scenes: DetectedScene[] = [];
@@ -224,6 +240,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
   const unclassified: DetectedLooseItem[] = [];
   const warnings: AnalysisProposal["warnings"] = [];
 
+  let currentEpisodeCode: string | null = null;
   let currentSceneCode: string | null = null;
   let sequence = 0;
 
@@ -303,6 +320,28 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       continue;
     }
 
+    const episodeMatch = firstLine.match(episodeHeader);
+    if (episodeMatch && /^(?:EPISODIO|EPISODE)\b/i.test(firstLine)) {
+      const episodeNumber = episodeMatch[1]
+        ? Number.parseInt(episodeMatch[1], 10)
+        : episodes.length + 1;
+      currentEpisodeCode = `EP${String(episodeNumber).padStart(2, "0")}`;
+      episodes.push({
+        id: makeId("episode", block.message, sequence),
+        kind: "episode",
+        number: episodeNumber,
+        code: currentEpisodeCode,
+        title: compact(episodeMatch[2]) ?? `Episodio ${String(episodeNumber)}`,
+        summary: compact(block.lines.slice(1).join(" ")),
+        orderIndex: episodes.length,
+        confidence: episodeMatch[1] ? 0.99 : 0.88,
+        extractionMethod: episodeMatch[1] ? "explicit" : "inferred",
+        sourceMessageIds: [block.message.id],
+        reviewStatus: "pending",
+      });
+      continue;
+    }
+
     const sceneMatch = firstLine.match(sceneHeader);
     if (sceneMatch && /^(?:ESCENA|SCENE)\b/i.test(firstLine)) {
       const sceneNumber = sceneMatch[1]
@@ -323,6 +362,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         kind: "scene",
         number: sceneNumber,
         code: currentSceneCode,
+        episodeCode: currentEpisodeCode,
         title: compact(sceneMatch[2]) ?? `Escena ${scenes.length + 1}`,
         summary: compact(scriptFragment),
         scriptFragment: compact(scriptFragment),
@@ -336,19 +376,43 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       continue;
     }
 
+    const specialShotMatch = firstLine.match(specialShotHeader);
+    const variantShotMatch = firstLine.match(variantShotHeader);
     const codedShotMatch = firstLine.match(codedShotHeader);
+    const directShotMatch = firstLine.match(directShotHeader);
     const plainShotMatch = firstLine.match(plainShotHeader);
-    if (codedShotMatch?.[1] || plainShotMatch?.[1]) {
+    if (
+      specialShotMatch ||
+      variantShotMatch?.[1] ||
+      codedShotMatch?.[1] ||
+      directShotMatch?.[1] ||
+      plainShotMatch?.[1]
+    ) {
       const plainShotNumber = plainShotMatch?.[1]
         ? Number.parseInt(plainShotMatch[1], 10)
         : null;
-      if (!currentSceneCode && plainShotNumber) {
+      const directShotNumber = directShotMatch?.[1]
+        ? Number.parseInt(directShotMatch[1].replace(/\D/g, ""), 10)
+        : null;
+      const codedShotNumber = codedShotMatch?.[1]
+        ? Number.parseInt(
+            codedShotMatch[1].match(/(?:P|SH)(\d+)/i)?.[1] ?? "",
+            10,
+          )
+        : null;
+      const variantOfShotNumber = variantShotMatch?.[1]
+        ? Number.parseInt(variantShotMatch[1], 10)
+        : null;
+      const globalNumber =
+        directShotNumber ?? codedShotNumber ?? plainShotNumber;
+      if (!currentSceneCode) {
         currentSceneCode = "E01";
         scenes.push({
           id: makeId("scene", block.message, sequence),
           kind: "scene",
           number: 1,
           code: currentSceneCode,
+          episodeCode: currentEpisodeCode,
           title: "Storyboard importado",
           summary:
             "Escena creada para organizar planos numerados sin escena explícita.",
@@ -361,11 +425,27 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
           reviewStatus: "needs_review",
         });
       }
-      const code: string = codedShotMatch?.[1]
-        ? codedShotMatch[1].toUpperCase()
-        : `${currentSceneCode ?? "E01"}-P${String(plainShotNumber).padStart(2, "0")}`;
+      const shotType = specialShotMatch
+        ? ("special" as const)
+        : variantShotMatch
+          ? ("variant" as const)
+          : ("normal" as const);
+      const specialCode = specialShotMatch?.[1]
+        ? specialShotMatch[1].toUpperCase().replace(/^ESP(?=\d)/, "ESP-")
+        : null;
+      const code =
+        shotType === "special"
+          ? specialCode
+          : shotType === "variant"
+            ? variantOfShotNumber
+              ? `P${String(variantOfShotNumber).padStart(3, "0")}-A`
+              : null
+            : globalNumber
+              ? `P${String(globalNumber).padStart(3, "0")}`
+              : null;
       const sceneCodeFromShot: string | null =
-        code.match(/^((?:E|S)\d{1,3})-/i)?.[1]?.toUpperCase() ?? null;
+        codedShotMatch?.[1]?.match(/^((?:E|S)\d{1,3})-/i)?.[1]?.toUpperCase() ??
+        null;
       currentSceneCode = sceneCodeFromShot ?? currentSceneCode;
       const sourceText = sourceLinesWithoutMetadata(block.lines);
       const fieldHeader =
@@ -384,9 +464,24 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         id: makeId("shot", block.message, sequence),
         kind: "shot",
         code,
+        globalNumber: shotType === "normal" ? globalNumber : null,
+        shotType,
+        specialCode,
+        variantOfShotNumber:
+          shotType === "variant" ? variantOfShotNumber : null,
+        episodeCode: currentEpisodeCode,
         sceneCode: currentSceneCode,
         orderIndex: shots.length,
-        title: compact(codedShotMatch?.[2] ?? plainShotMatch?.[2]) ?? code,
+        title:
+          compact(
+            specialShotMatch?.[2] ??
+              variantShotMatch?.[2] ??
+              codedShotMatch?.[2] ??
+              directShotMatch?.[2] ??
+              plainShotMatch?.[2],
+          ) ??
+          code ??
+          "Plano especial",
         visualDescription: compact(sourceText),
         action: compact(sourceText),
         framing: detectFraming(sourceText),
@@ -411,9 +506,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         kind: "image_prompt",
         title: compact(imagePromptMatch[1]),
         text: block.lines.slice(1).join("\n").trim(),
-        relatedShotCode: compact(
-          imagePromptMatch[1]?.match(/(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}/i)?.[0],
-        ),
+        relatedShotCode: canonicalShotReference(imagePromptMatch[1]),
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
@@ -429,9 +522,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         kind: "video_prompt",
         title: compact(videoPromptMatch[1]),
         text: block.lines.slice(1).join("\n").trim(),
-        relatedShotCode: compact(
-          videoPromptMatch[1]?.match(/(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}/i)?.[0],
-        ),
+        relatedShotCode: canonicalShotReference(videoPromptMatch[1]),
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
@@ -486,6 +577,31 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     });
   }
 
+  const normalShots = shots.filter(
+    (shot) => shot.shotType === "normal" && shot.globalNumber,
+  );
+  const normalNumbers = normalShots.map((shot) => shot.globalNumber!);
+  const legacyNumbering =
+    new Set(normalNumbers).size !== normalNumbers.length ||
+    normalNumbers.some(
+      (number, index) => index > 0 && number <= (normalNumbers[index - 1] ?? 0),
+    );
+  if (legacyNumbering) {
+    let nextNumber = 1;
+    for (const shot of shots) {
+      if (shot.shotType !== "normal") continue;
+      shot.globalNumber = nextNumber;
+      shot.code = `P${String(nextNumber).padStart(3, "0")}`;
+      nextNumber += 1;
+    }
+    warnings.push({
+      code: "LEGACY_SCENE_NUMBERING_NORMALIZED",
+      message:
+        "La numeración se reiniciaba por escena. FrameSync la normalizó a una secuencia global única.",
+      sourceMessageIds: normalShots.flatMap((shot) => shot.sourceMessageIds),
+    });
+  }
+
   const duplicateShotCodes = new Set<string>();
   const seenShotCodes = new Set<string>();
   for (const shot of shots) {
@@ -516,6 +632,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
 
   const resultWithoutSummary = {
     scriptCandidates,
+    episodes,
     characters,
     locations,
     scenes,

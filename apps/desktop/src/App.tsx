@@ -76,7 +76,7 @@ export function App() {
         <span>SQLITE · WAL</span>
         <i />
         <span>ANÁLISIS SIN NUBE</span>
-        <b>FrameSync 0.1.2</b>
+        <b>FrameSync 0.1.3</b>
       </footer>
       {error && <ErrorToast message={error} onClose={clearError} />}
     </div>

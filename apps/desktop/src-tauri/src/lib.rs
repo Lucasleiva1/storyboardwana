@@ -1,9 +1,14 @@
 use serde::Serialize;
 use serde_json::Value;
+use sqlx::{
+    ConnectOptions, Connection, SqliteConnection,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+};
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 use tauri::{AppHandle, Manager, path::BaseDirectory};
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -50,6 +55,297 @@ fn validate_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn database_error(error: sqlx::Error) -> String {
+    format!("No se pudo actualizar la base local: {error}")
+}
+
+#[tauri::command]
+async fn delete_capture_source(
+    app: AppHandle,
+    project_id: String,
+    capture_id: String,
+    remove_imported_content: bool,
+) -> Result<(), String> {
+    let database_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("No se encontró la carpeta de datos: {error}"))?
+        .join("framesync.db");
+    delete_capture_source_in_database(
+        database_path,
+        project_id,
+        capture_id,
+        remove_imported_content,
+    )
+    .await
+}
+
+async fn delete_capture_source_in_database(
+    database_path: PathBuf,
+    project_id: String,
+    capture_id: String,
+    remove_imported_content: bool,
+) -> Result<(), String> {
+    validate_id(&project_id)?;
+    validate_id(&capture_id)?;
+
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM capture_sources WHERE id = ? AND project_id = ? LIMIT 1",
+    )
+    .bind(&capture_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?;
+    if exists.is_none() {
+        return Err("La fuente ya no existe dentro de este proyecto.".to_owned());
+    }
+
+    let mut transaction = connection.begin().await.map_err(database_error)?;
+    if remove_imported_content {
+        sqlx::query("DELETE FROM shots WHERE project_id = ? AND source_capture_id = ?")
+            .bind(&project_id)
+            .bind(&capture_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM scenes
+             WHERE project_id = ? AND source_capture_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM shots shot WHERE shot.scene_id = scenes.id
+               )",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE scenes SET source_capture_id = NULL
+             WHERE project_id = ? AND source_capture_id = ?",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM episodes
+             WHERE project_id = ? AND source_capture_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM scenes scene WHERE scene.episode_id = episodes.id
+               )",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE episodes SET source_capture_id = NULL
+             WHERE project_id = ? AND source_capture_id = ?",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM script_versions
+             WHERE source_capture_id = ?
+               AND script_id IN (
+                 SELECT id FROM scripts WHERE project_id = ?
+               )",
+        )
+        .bind(&capture_id)
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM scripts
+             WHERE project_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM script_versions version
+                 WHERE version.script_id = scripts.id
+               )",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE scripts
+             SET canonical_version_id = (
+               SELECT version.id
+               FROM script_versions version
+               WHERE version.script_id = scripts.id
+               ORDER BY version.version_number DESC
+               LIMIT 1
+             )
+             WHERE project_id = ?
+               AND canonical_version_id NOT IN (
+                 SELECT id FROM script_versions
+               )",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM character_versions
+             WHERE source_capture_id = ?
+               AND character_id IN (
+                 SELECT id FROM characters WHERE project_id = ?
+               )",
+        )
+        .bind(&capture_id)
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM characters
+             WHERE project_id = ? AND source_capture_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM character_versions version
+                 WHERE version.character_id = characters.id
+               )",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE characters
+             SET canonical_version_id = (
+                   SELECT version.id
+                   FROM character_versions version
+                   WHERE version.character_id = characters.id
+                   ORDER BY version.version_number DESC
+                   LIMIT 1
+                 ),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = ?
+               AND canonical_version_id NOT IN (
+                 SELECT id FROM character_versions
+               )",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE characters
+             SET source_capture_id = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = ? AND source_capture_id = ?",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM location_versions
+             WHERE source_capture_id = ?
+               AND location_id IN (
+                 SELECT id FROM locations WHERE project_id = ?
+               )",
+        )
+        .bind(&capture_id)
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM locations
+             WHERE project_id = ? AND source_capture_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM location_versions version
+                 WHERE version.location_id = locations.id
+               )",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE locations
+             SET canonical_version_id = (
+                   SELECT version.id
+                   FROM location_versions version
+                   WHERE version.location_id = locations.id
+                   ORDER BY version.version_number DESC
+                   LIMIT 1
+                 ),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = ?
+               AND canonical_version_id NOT IN (
+                 SELECT id FROM location_versions
+               )",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE locations
+             SET source_capture_id = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = ? AND source_capture_id = ?",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM assets
+             WHERE project_id = ? AND capture_source_id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM shot_assets link WHERE link.asset_id = assets.id
+               )",
+        )
+        .bind(&project_id)
+        .bind(&capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    }
+
+    sqlx::query("DELETE FROM capture_sources WHERE id = ? AND project_id = ?")
+        .bind(&capture_id)
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE projects
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(&project_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)
+}
+
 fn inbox_root() -> Result<PathBuf, String> {
     let local_app_data = env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA no está configurado.")?;
     Ok(PathBuf::from(local_app_data)
@@ -60,6 +356,10 @@ fn inbox_root() -> Result<PathBuf, String> {
 fn local_framesync_root() -> Result<PathBuf, String> {
     let local_app_data = env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA no está configurado.")?;
     Ok(PathBuf::from(local_app_data).join("FrameSync"))
+}
+
+fn workspace_context_path() -> Result<PathBuf, String> {
+    Ok(local_framesync_root()?.join("workspace-context.json"))
 }
 
 fn manifest_path() -> Result<PathBuf, String> {
@@ -403,7 +703,7 @@ fn asset_manifests(capture_dir: &Path) -> Result<Vec<Value>, String> {
         return Ok(Vec::new());
     }
     let mut manifests = Vec::new();
-    for entry in fs::read_dir(assets_dir)
+    for entry in fs::read_dir(&assets_dir)
         .map_err(|error| format!("No se pudo inspeccionar assets: {error}"))?
     {
         let entry = entry.map_err(|error| format!("Asset inaccesible: {error}"))?;
@@ -413,10 +713,57 @@ fn asset_manifests(capture_dir: &Path) -> Result<Vec<Value>, String> {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(".manifest.json"))
         {
-            manifests.push(read_json(&path)?);
+            let mut manifest = read_json(&path)?;
+            if let Some(object) = manifest.as_object_mut() {
+                let asset_id = object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let stored_path = asset_id.and_then(|id| {
+                    fs::read_dir(&assets_dir)
+                        .ok()?
+                        .filter_map(Result::ok)
+                        .find_map(|asset_entry| {
+                            let candidate = asset_entry.path();
+                            let file_name = candidate.file_name()?.to_str()?;
+                            (candidate.is_file()
+                                && file_name.starts_with(&format!("{id}."))
+                                && !file_name.ends_with(".manifest.json"))
+                            .then(|| candidate.display().to_string())
+                        })
+                });
+                object.insert(
+                    "localPath".to_owned(),
+                    stored_path.map(Value::String).unwrap_or(Value::Null),
+                );
+            }
+            manifests.push(manifest);
         }
     }
     Ok(manifests)
+}
+
+#[tauri::command]
+fn write_workspace_context(context: Value) -> Result<(), String> {
+    let object = context
+        .as_object()
+        .ok_or("El contexto de proyectos no es un objeto válido.")?;
+    if object.get("protocolVersion").and_then(Value::as_u64) != Some(1)
+        || !object.get("projects").is_some_and(Value::is_array)
+    {
+        return Err("El contexto de proyectos no cumple el protocolo FrameSync.".to_owned());
+    }
+    let path = workspace_context_path()?;
+    let parent = path
+        .parent()
+        .ok_or("La ruta de contexto no tiene directorio padre.")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("No se pudo crear {}: {error}", parent.display()))?;
+    let mut bytes = serde_json::to_vec_pretty(&context)
+        .map_err(|error| format!("No se pudo serializar el contexto: {error}"))?;
+    bytes.push(b'\n');
+    fs::write(&path, bytes)
+        .map_err(|error| format!("No se pudo escribir {}: {error}", path.display()))
 }
 
 #[tauri::command]
@@ -517,12 +864,26 @@ fn mark_inbox_capture_processed(capture_id: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![Migration {
-        version: 1,
-        description: "initial_framesync_schema",
-        sql: include_str!("../migrations/0001_init.sql"),
-        kind: MigrationKind::Up,
-    }];
+    let migrations = vec![
+        Migration {
+            version: 1,
+            description: "initial_framesync_schema",
+            sql: include_str!("../migrations/0001_init.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "project_episode_global_shot_continuity",
+            sql: include_str!("../migrations/0002_project_continuity.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "human_readable_project_numbers",
+            sql: include_str!("../migrations/0003_project_numbers.sql"),
+            kind: MigrationKind::Up,
+        },
+    ];
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -543,12 +904,97 @@ pub fn run() {
             list_inbox_captures,
             read_inbox_capture,
             mark_inbox_capture_processed,
+            write_workspace_context,
             get_browser_integration_status,
             prepare_browser_integration,
+            delete_capture_source,
             open_extension_folder,
             open_chrome_extensions,
             open_edge_extensions
         ])
         .run(tauri::generate_context!())
         .expect("FrameSync desktop failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn source_only_deletion_commits_on_one_native_connection() {
+        tauri::async_runtime::block_on(async {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let database_path = env::temp_dir().join(format!(
+                "framesync-delete-source-{}-{nonce}.db",
+                std::process::id()
+            ));
+            let options = SqliteConnectOptions::new()
+                .filename(&database_path)
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let mut connection = SqliteConnection::connect_with(&options)
+                .await
+                .expect("create test database");
+            sqlx::raw_sql(
+                "CREATE TABLE projects (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 CREATE TABLE capture_sources (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   project_id TEXT,
+                   FOREIGN KEY (project_id) REFERENCES projects(id)
+                 );
+                 CREATE TABLE capture_messages (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   capture_source_id TEXT NOT NULL,
+                   FOREIGN KEY (capture_source_id)
+                     REFERENCES capture_sources(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO projects (id, updated_at)
+                   VALUES ('project-test', 'before');
+                 INSERT INTO capture_sources (id, project_id)
+                   VALUES ('capture-test', 'project-test');
+                 INSERT INTO capture_messages (id, capture_source_id)
+                   VALUES ('message-test', 'capture-test');",
+            )
+            .execute(&mut connection)
+            .await
+            .expect("seed test database");
+            connection.close().await.expect("close seed connection");
+
+            delete_capture_source_in_database(
+                database_path.clone(),
+                "project-test".to_owned(),
+                "capture-test".to_owned(),
+                false,
+            )
+            .await
+            .expect("delete source transaction");
+
+            let mut verification = SqliteConnection::connect_with(&options)
+                .await
+                .expect("reopen test database");
+            let source_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capture_sources")
+                .fetch_one(&mut verification)
+                .await
+                .expect("count sources");
+            let message_count =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM capture_messages")
+                    .fetch_one(&mut verification)
+                    .await
+                    .expect("count messages");
+            assert_eq!(source_count, 0);
+            assert_eq!(message_count, 0);
+            verification.close().await.expect("close test database");
+
+            let _ = fs::remove_file(&database_path);
+            let _ = fs::remove_file(database_path.with_extension("db-wal"));
+            let _ = fs::remove_file(database_path.with_extension("db-shm"));
+        });
+    }
 }

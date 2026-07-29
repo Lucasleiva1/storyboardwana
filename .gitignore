@@ -4,6 +4,7 @@ dist/
 .output/
 target/
 coverage/
+artifacts/
 *.log
 *.pdb
 *.sqlite

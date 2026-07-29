@@ -2,7 +2,12 @@
   color: #e7e5df;
   background: #0a0c0e;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
     sans-serif;
   font-synthesis: none;
 }
@@ -15,8 +20,8 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 /
-      100% 28px,
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 / 100%
+      28px,
     #0a0c0e;
 }
 
@@ -64,7 +69,10 @@ button:disabled {
   place-items: center;
   border: 1px solid #b98128;
   color: #efb34a;
-  font: 700 11px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    700 11px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
   letter-spacing: 0.12em;
   transform: rotate(45deg);
 }
@@ -116,13 +124,19 @@ h1 {
 footer span {
   margin-right: 8px;
   color: #888c90;
-  font: 600 9px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 9px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
   letter-spacing: 0.16em;
 }
 
 .status-strip strong {
   color: #dca23e;
-  font: 600 10px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 10px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
 }
 
 .status-strip p {
@@ -146,7 +160,10 @@ section {
 
 .section-heading span {
   color: #d69a34;
-  font: 600 9px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 9px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
 }
 
 .section-heading h2 {
@@ -160,6 +177,54 @@ section {
 .capture-actions {
   display: grid;
   gap: 8px;
+}
+
+.project-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.project-select-row select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 9px;
+  border: 1px solid #4a4d50;
+  border-radius: 3px;
+  color: #e9e5dd;
+  background: #111417;
+  font:
+    600 10px/1.2 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+}
+
+.project-memory {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid #303336;
+  background: #101316;
+}
+
+.project-memory span,
+.project-memory strong {
+  font-size: 10px;
+}
+
+.project-memory span {
+  color: #898d90;
+}
+
+.project-memory strong {
+  color: #e1aa49;
+}
+
+.project-memory button {
+  margin-top: 2px;
+  border-color: #705522;
+  color: #e1aa49;
 }
 
 .primary,
@@ -189,7 +254,10 @@ section {
 
 .session-line strong {
   color: #d9a03f;
-  font: 600 10px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 10px/1.4 ui-monospace,
+    "Cascadia Mono",
+    monospace;
 }
 
 .session-line small {
@@ -228,7 +296,10 @@ button.danger {
 .metrics dd {
   margin: 4px 0 0;
   color: #efb149;
-  font: 600 15px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 15px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
 }
 
 .source-meta {
@@ -249,7 +320,10 @@ button.danger {
   padding: 3px 5px;
   border: 1px solid #4b4f52;
   color: #a7aaac;
-  font: 600 8px/1 ui-monospace, "Cascadia Mono", monospace;
+  font:
+    600 8px/1 ui-monospace,
+    "Cascadia Mono",
+    monospace;
 }
 
 .source-meta p {
@@ -300,4 +374,3 @@ footer strong {
   color: #c4c1ba;
   font-size: 10px;
 }
-

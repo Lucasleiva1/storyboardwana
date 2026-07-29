@@ -6,6 +6,7 @@ import {
   FileText,
   Images,
   MapPin,
+  Pencil,
   Plus,
   Radio,
   Rows3,
@@ -39,6 +40,8 @@ export function TopBar() {
     activeView,
     setActiveView,
     openProject,
+    createProject,
+    renameProject,
     importDemo,
     buildStressDataset,
     sources,
@@ -99,7 +102,11 @@ export function TopBar() {
           >
             <span>
               <small>PROYECTO</small>
-              <strong>{project?.name ?? "Sin proyecto"}</strong>
+              <strong>
+                {project
+                  ? `PRJ-${String(project.projectNumber).padStart(4, "0")} · ${project.name}`
+                  : "Sin proyecto"}
+              </strong>
             </span>
             <ChevronDown size={14} />
           </button>
@@ -122,6 +129,40 @@ export function TopBar() {
                 <span>PROYECTOS RECIENTES</span>
                 <small>{projects.length}</small>
               </div>
+              <button
+                onClick={() => {
+                  const name = window.prompt(
+                    "Nombre del nuevo proyecto (podés dejarlo vacío):",
+                    "",
+                  );
+                  if (name !== null) void createProject(name);
+                  setProjectMenu(false);
+                }}
+              >
+                <Plus size={14} />
+                <span>
+                  <strong>Nuevo proyecto</strong>
+                  <small>Nombre opcional y número automático</small>
+                </span>
+              </button>
+              {project && (
+                <button
+                  onClick={() => {
+                    const name = window.prompt(
+                      "Nuevo nombre del proyecto:",
+                      project.name,
+                    );
+                    if (name !== null) void renameProject(name);
+                    setProjectMenu(false);
+                  }}
+                >
+                  <Pencil size={14} />
+                  <span>
+                    <strong>Renombrar proyecto actual</strong>
+                    <small>El número y el identificador no cambian</small>
+                  </span>
+                </button>
+              )}
               {projects.map((item) => (
                 <button
                   key={item.id}
@@ -133,7 +174,10 @@ export function TopBar() {
                 >
                   <Archive size={14} />
                   <span>
-                    <strong>{item.name}</strong>
+                    <strong>
+                      PRJ-{String(item.projectNumber).padStart(4, "0")} ·{" "}
+                      {item.name}
+                    </strong>
                     <small>
                       {item.id === project?.id
                         ? `${sources.length} fuentes`

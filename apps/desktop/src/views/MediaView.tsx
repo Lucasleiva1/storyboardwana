@@ -1,14 +1,19 @@
-import { ImageOff, Link2, Maximize2 } from "lucide-react";
+import { ArrowLeft, ImageOff, Link2, Maximize2 } from "lucide-react";
+import { useMemo } from "react";
 import { useFrameSyncStore } from "../store";
 
 export function MediaView() {
-  const assets = useFrameSyncStore((state) =>
-    state.sources.flatMap((source) =>
-      source.capture.assets.map((asset) => ({
-        ...asset,
-        captureTitle: source.capture.conversationTitle,
-      })),
-    ),
+  const setActiveView = useFrameSyncStore((state) => state.setActiveView);
+  const sources = useFrameSyncStore((state) => state.sources);
+  const assets = useMemo(
+    () =>
+      sources.flatMap((source) =>
+        source.capture.assets.map((asset) => ({
+          ...asset,
+          captureTitle: source.capture.conversationTitle,
+        })),
+      ),
+    [sources],
   );
 
   return (
@@ -22,6 +27,10 @@ export function MediaView() {
             trazables.
           </p>
         </div>
+        <button onClick={() => setActiveView("shots")}>
+          <ArrowLeft size={14} />
+          Volver a escenas y planos
+        </button>
       </header>
       {assets.length > 0 ? (
         <div className="media-grid">
@@ -45,6 +54,12 @@ export function MediaView() {
                 <div>
                   <dt>Calidad</dt>
                   <dd>{asset.qualitySource}</dd>
+                </div>
+                <div>
+                  <dt>Asignación</dt>
+                  <dd>
+                    {asset.relatedShotCode ?? "Sin plano"} · {asset.role}
+                  </dd>
                 </div>
                 <div>
                   <dt>Fuente</dt>

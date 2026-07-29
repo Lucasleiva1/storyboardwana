@@ -3,6 +3,7 @@ import type {
   CaptureMessage,
   ImageCandidate,
   NativeResponse,
+  WorkspaceContext,
 } from "@framesync/contracts";
 
 export type CaptureDraft = CaptureEnvelope & {
@@ -17,6 +18,7 @@ export type SessionSnapshot = {
 
 export type BackgroundRequest =
   | { type: "host.ping" }
+  | { type: "workspace.list" }
   | {
       type: "capture.page";
       mode: "full" | "loaded" | "selection";
@@ -24,6 +26,8 @@ export type BackgroundRequest =
   | {
       type: "capture.send";
       capture: CaptureDraft;
+      destinationProjectId: string;
+      destinationProjectName: string;
     }
   | {
       type: "session.control";
@@ -32,6 +36,7 @@ export type BackgroundRequest =
 
 export type BackgroundResponse =
   | { ok: true; native?: NativeResponse }
+  | { ok: true; workspace: WorkspaceContext }
   | { ok: true; capture: CaptureDraft }
   | { ok: true; session: SessionSnapshot }
   | {
@@ -55,4 +60,3 @@ export type InjectedCapture = {
   skippedNodeCount: number;
   warnings: string[];
 };
-

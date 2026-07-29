@@ -2,6 +2,7 @@ import type {
   AnalysisProposal,
   CaptureEnvelope,
   DetectedCharacter,
+  DetectedEpisode,
   DetectedLocation,
   DetectedScene,
   DetectedScript,
@@ -20,6 +21,7 @@ export type WorkspaceView =
 
 export type Project = {
   id: string;
+  projectNumber: number;
   name: string;
   description: string | null;
   createdAt: string;
@@ -45,12 +47,16 @@ export type ProductionShot = DetectedShot & {
     | "approved"
     | "conflict"
     | "incomplete";
+  firstFramePath?: string | null;
+  videoPath?: string | null;
+  storyboardAssetCount?: number;
 };
 
 export type ProductionData = {
   scripts: DetectedScript[];
   characters: DetectedCharacter[];
   locations: DetectedLocation[];
+  episodes: DetectedEpisode[];
   scenes: DetectedScene[];
   shots: ProductionShot[];
 };
@@ -59,6 +65,7 @@ export const EMPTY_PRODUCTION: ProductionData = {
   scripts: [],
   characters: [],
   locations: [],
+  episodes: [],
   scenes: [],
   shots: [],
 };
