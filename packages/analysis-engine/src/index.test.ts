@@ -173,6 +173,32 @@ La puerta se abre y la cámara avanza lentamente hacia el interior.`,
     expect(result.shots[1]?.videoTechnical.camera).toBeNull();
   });
 
+  it("removes PDF page provenance from video prompts", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "video-prompt-page-boundary";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "video-prompt-page-boundary-message",
+        text: `PLANO 1 — APERTURA
+Duración 6 segundos
+PROMPT DE VIDEO
+La cámara avanza lentamente mientras la puerta se abre.
+--- PAGINA 7 ---
+ROXWANA — NO SIGNAL · Desglose cinematográfico PLANOS 1–30`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.shots[0]?.videoPrompt).toBe(
+      "La cámara avanza lentamente mientras la puerta se abre.",
+    );
+    expect(result.videoPrompts[0]?.text).not.toContain("PAGINA");
+    expect(result.videoPrompts[0]?.text).not.toContain("ROXWANA");
+  });
+
   it("keeps episodes and normalizes scene-local shot numbers globally", () => {
     const capture = structuredClone(DEMO_CAPTURE);
     capture.captureId = "episode-global-numbering";

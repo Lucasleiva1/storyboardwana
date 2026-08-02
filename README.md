@@ -78,6 +78,7 @@ La clave privada del updater vive fuera del repositorio.
 - [Plan del MVP](docs/IMPLEMENTATION_PLAN_TODAY.md)
 - [Protocolo Native Messaging](docs/NATIVE_MESSAGING_PROTOCOL.md)
 - [Proceso de releases](docs/RELEASING.md)
+- [Reglas operativas e incidentes](docs/OPERATING_RULES_AND_INCIDENTS.md)
 
 ## Licencia
 

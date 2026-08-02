@@ -28,15 +28,28 @@ export function App() {
   }, [bootstrap]);
 
   useEffect(() => {
-    if (!project) return;
-    void pollInbox();
-    void syncProjectWorkspace();
+    if (!project || busy) return;
+    let cancelled = false;
+    let refreshing = false;
+    async function refreshProject() {
+      if (refreshing || cancelled) return;
+      refreshing = true;
+      try {
+        await pollInbox();
+        if (!cancelled) await syncProjectWorkspace();
+      } finally {
+        refreshing = false;
+      }
+    }
+    void refreshProject();
     const interval = window.setInterval(() => {
-      void pollInbox();
-      void syncProjectWorkspace();
+      void refreshProject();
     }, 8_000);
-    return () => window.clearInterval(interval);
-  }, [project, pollInbox, syncProjectWorkspace]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [project, busy, pollInbox, syncProjectWorkspace]);
 
   if (!ready) {
     return (

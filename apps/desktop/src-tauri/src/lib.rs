@@ -84,9 +84,49 @@ struct ShotMediaImportResult {
 struct ProjectWorkspaceResult {
     root_path: String,
     sources_path: String,
+    multimedia_inbox_path: String,
     shots_path: String,
     unassigned_path: String,
     exports_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MultimediaInboxItem {
+    id: String,
+    original_filename: String,
+    staged_path: String,
+    kind: String,
+    mime_type: String,
+    byte_size: i64,
+    sha256: String,
+    shot_id: Option<String>,
+    shot_code: Option<String>,
+    shot_title: Option<String>,
+    role: Option<String>,
+    status: String,
+    detection_note: String,
+    error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MultimediaStageResult {
+    discovered: usize,
+    staged: usize,
+    duplicates: usize,
+    ignored: usize,
+    ready: usize,
+    needs_review: usize,
+    items: Vec<MultimediaInboxItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MultimediaProcessResult {
+    processed: usize,
+    failed: usize,
+    errors: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,16 +199,25 @@ fn ensure_project_workspace(
         }
     }
     let sources = desired_root.join("Fuentes");
+    let multimedia_inbox = desired_root.join("Bandeja multimedia");
     let shots = desired_root.join("Planos");
     let unassigned = desired_root.join("Sin asignar");
     let exports = desired_root.join("Exportaciones");
-    for path in [&desired_root, &sources, &shots, &unassigned, &exports] {
+    for path in [
+        &desired_root,
+        &sources,
+        &multimedia_inbox,
+        &shots,
+        &unassigned,
+        &exports,
+    ] {
         fs::create_dir_all(path)
             .map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
     }
     Ok(ProjectWorkspaceResult {
         root_path: desired_root.to_string_lossy().to_string(),
         sources_path: sources.to_string_lossy().to_string(),
+        multimedia_inbox_path: multimedia_inbox.to_string_lossy().to_string(),
         shots_path: shots.to_string_lossy().to_string(),
         unassigned_path: unassigned.to_string_lossy().to_string(),
         exports_path: exports.to_string_lossy().to_string(),
@@ -745,7 +794,13 @@ fn collect_media_files(root: &Path) -> Result<Vec<PathBuf>, String> {
                 .map_err(|error| format!("No se pudo leer una entrada: {error}"))?
                 .path();
             if path.is_dir() {
-                pending.push(path);
+                if !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("Bandeja multimedia"))
+                {
+                    pending.push(path);
+                }
             } else if media_kind_and_mime(&path).is_some() {
                 files.push(path);
             }
@@ -753,6 +808,31 @@ fn collect_media_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+fn collect_selected_media_files(paths: &[String]) -> Result<(Vec<PathBuf>, usize), String> {
+    let mut pending = paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let mut files = Vec::new();
+    let mut ignored = 0;
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            for entry in fs::read_dir(&path)
+                .map_err(|error| format!("No se pudo leer {}: {error}", path.display()))?
+            {
+                pending.push(
+                    entry
+                        .map_err(|error| format!("No se pudo leer una entrada: {error}"))?
+                        .path(),
+                );
+            }
+        } else if path.is_file() && media_kind_and_mime(&path).is_some() {
+            files.push(path);
+        } else {
+            ignored += 1;
+        }
+    }
+    files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    Ok((files, ignored))
 }
 
 fn media_kind_and_mime(path: &Path) -> Option<(&'static str, &'static str)> {
@@ -967,6 +1047,10 @@ fn shot_code_from_filename(path: &Path) -> Option<String> {
             tokens.get(index + 1).copied().filter(|value| {
                 !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
             })
+        } else if let Some(value) = token.strip_prefix("PLANO") {
+            (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())).then_some(value)
+        } else if let Some(value) = token.strip_prefix("SHOT") {
+            (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())).then_some(value)
         } else if let Some(value) = token.strip_prefix('P') {
             (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())).then_some(value)
         } else {
@@ -1027,6 +1111,501 @@ fn file_sha256(path: &Path) -> Result<String, String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn detected_shot_code(path: &Path) -> Option<String> {
+    shot_code_from_filename(path).or_else(|| {
+        path.ancestors()
+            .skip(1)
+            .take(4)
+            .find_map(shot_code_from_filename)
+    })
+}
+
+fn detected_media_role(path: &Path, kind: &str) -> Option<&'static str> {
+    let role = media_role(path, kind);
+    matches!(role, "storyboard" | "first_frame" | "video_final").then_some(role)
+}
+
+fn safe_staged_filename(filename: &str) -> String {
+    let safe = filename
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let safe = if safe.is_empty() {
+        "archivo".to_owned()
+    } else {
+        safe
+    };
+    if safe.chars().count() <= 110 {
+        return safe;
+    }
+    let extension = Path::new(&safe)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let extension_length = extension.chars().count().min(12);
+    let stem_length =
+        110_usize.saturating_sub(extension_length + usize::from(!extension.is_empty()));
+    let stem = Path::new(&safe)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("archivo")
+        .chars()
+        .take(stem_length)
+        .collect::<String>();
+    if extension.is_empty() {
+        stem
+    } else {
+        format!(
+            "{stem}.{}",
+            extension.chars().take(extension_length).collect::<String>()
+        )
+    }
+}
+
+async fn multimedia_inbox_items(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+) -> Result<Vec<MultimediaInboxItem>, String> {
+    let rows = sqlx::query(
+        "SELECT inbox.id, inbox.original_filename, inbox.staged_path,
+                inbox.kind, inbox.mime_type, inbox.byte_size, inbox.sha256,
+                inbox.shot_id, COALESCE(shot.code, inbox.detected_shot_code) AS shot_code,
+                shot.title AS shot_title, inbox.role, inbox.status,
+                inbox.detection_note, inbox.error_message
+           FROM multimedia_inbox inbox
+           LEFT JOIN shots shot ON shot.id = inbox.shot_id
+          WHERE inbox.project_id = ?
+          ORDER BY CASE inbox.status WHEN 'needs_review' THEN 0 WHEN 'error' THEN 1 ELSE 2 END,
+                   inbox.created_at, inbox.original_filename",
+    )
+    .bind(project_id)
+    .fetch_all(connection)
+    .await
+    .map_err(database_error)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(MultimediaInboxItem {
+                id: row.try_get("id").map_err(database_error)?,
+                original_filename: row.try_get("original_filename").map_err(database_error)?,
+                staged_path: row.try_get("staged_path").map_err(database_error)?,
+                kind: row.try_get("kind").map_err(database_error)?,
+                mime_type: row.try_get("mime_type").map_err(database_error)?,
+                byte_size: row.try_get("byte_size").map_err(database_error)?,
+                sha256: row.try_get("sha256").map_err(database_error)?,
+                shot_id: row.try_get("shot_id").map_err(database_error)?,
+                shot_code: row.try_get("shot_code").map_err(database_error)?,
+                shot_title: row.try_get("shot_title").map_err(database_error)?,
+                role: row.try_get("role").map_err(database_error)?,
+                status: row.try_get("status").map_err(database_error)?,
+                detection_note: row.try_get("detection_note").map_err(database_error)?,
+                error_message: row.try_get("error_message").map_err(database_error)?,
+            })
+        })
+        .collect()
+}
+
+fn database_options(app: &AppHandle) -> Result<SqliteConnectOptions, String> {
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontro la base local: {error}"))?
+        .join("framesync.db");
+    Ok(SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging())
+}
+
+#[tauri::command]
+async fn list_multimedia_inbox(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<MultimediaInboxItem>, String> {
+    validate_id(&project_id)?;
+    let mut connection = SqliteConnection::connect_with(&database_options(&app)?)
+        .await
+        .map_err(database_error)?;
+    multimedia_inbox_items(&mut connection, &project_id).await
+}
+
+#[tauri::command]
+async fn stage_multimedia_paths(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    paths: Vec<String>,
+) -> Result<MultimediaStageResult, String> {
+    validate_id(&project_id)?;
+    let (files, ignored) = collect_selected_media_files(&paths)?;
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    let inbox_root = PathBuf::from(&workspace.multimedia_inbox_path);
+    let mut connection = SqliteConnection::connect_with(&database_options(&app)?)
+        .await
+        .map_err(database_error)?;
+    let mut result = MultimediaStageResult {
+        discovered: files.len(),
+        staged: 0,
+        duplicates: 0,
+        ignored,
+        ready: 0,
+        needs_review: 0,
+        items: Vec::new(),
+    };
+    for source_path in files {
+        let Some((kind, mime_type)) = media_kind_and_mime(&source_path) else {
+            continue;
+        };
+        let sha256 = file_sha256(&source_path)?;
+        let duplicate = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM multimedia_inbox WHERE project_id = ? AND sha256 = ? LIMIT 1",
+        )
+        .bind(&project_id)
+        .bind(&sha256)
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(database_error)?;
+        if duplicate.is_some() {
+            result.duplicates += 1;
+            continue;
+        }
+        let original_filename = source_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let staged_path = inbox_root.join(format!(
+            "{}_{}",
+            &sha256[..24],
+            safe_staged_filename(&original_filename)
+        ));
+        if source_path != staged_path {
+            fs::copy(&source_path, &staged_path).map_err(|error| {
+                format!(
+                    "No se pudo copiar {} a la bandeja: {error}",
+                    source_path.display()
+                )
+            })?;
+        }
+        let copied_hash = file_sha256(&staged_path)?;
+        let byte_size = fs::metadata(&source_path)
+            .map_err(|error| format!("No se pudo medir {}: {error}", source_path.display()))?
+            .len() as i64;
+        let staged_size = fs::metadata(&staged_path)
+            .map_err(|error| format!("No se pudo verificar {}: {error}", staged_path.display()))?
+            .len() as i64;
+        if copied_hash != sha256 || staged_size != byte_size {
+            let _ = fs::remove_file(&staged_path);
+            return Err(format!(
+                "La copia de {} no coincide byte por byte con el original.",
+                original_filename
+            ));
+        }
+        let shot_code = detected_shot_code(&source_path);
+        let role = detected_media_role(&source_path, kind);
+        let shot = if let Some(code) = &shot_code {
+            sqlx::query("SELECT id, code FROM shots WHERE project_id = ? AND code = ? LIMIT 1")
+                .bind(&project_id)
+                .bind(code)
+                .fetch_optional(&mut connection)
+                .await
+                .map_err(database_error)?
+        } else {
+            None
+        };
+        let shot_id = shot
+            .as_ref()
+            .map(|row| row.try_get::<String, _>("id"))
+            .transpose()
+            .map_err(database_error)?;
+        let status = if shot_id.is_some() && role.is_some() {
+            result.ready += 1;
+            "ready"
+        } else {
+            result.needs_review += 1;
+            "needs_review"
+        };
+        let detection_note = match (&shot_code, role, &shot_id) {
+            (Some(code), Some(_), Some(_)) => {
+                format!("Nombre reconocido de forma segura como {code}.")
+            }
+            (Some(code), _, None) => {
+                format!("Se detecto {code}, pero ese plano no existe en el proyecto.")
+            }
+            (Some(code), None, _) => {
+                format!("Se detecto {code}, pero no si es storyboard o primer frame.")
+            }
+            (None, Some(_), _) => "Se detecto el tipo de medio, pero no el plano.".to_owned(),
+            _ => "El nombre no permite identificar plano y tipo con seguridad.".to_owned(),
+        };
+        let item_seed = format!("{project_id}:{sha256}");
+        let item_hash = format!("{:x}", Sha256::digest(item_seed.as_bytes()));
+        let item_id = format!("media-inbox-{}", &item_hash[..24]);
+        sqlx::query(
+            "INSERT INTO multimedia_inbox (
+               id, project_id, original_path, staged_path, original_filename,
+               kind, mime_type, byte_size, sha256, shot_id, detected_shot_code,
+               role, status, detection_note
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&item_id)
+        .bind(&project_id)
+        .bind(source_path.to_string_lossy().to_string())
+        .bind(staged_path.to_string_lossy().to_string())
+        .bind(&original_filename)
+        .bind(kind)
+        .bind(mime_type)
+        .bind(byte_size)
+        .bind(&sha256)
+        .bind(&shot_id)
+        .bind(&shot_code)
+        .bind(role)
+        .bind(status)
+        .bind(&detection_note)
+        .execute(&mut connection)
+        .await
+        .map_err(database_error)?;
+        result.staged += 1;
+    }
+    result.items = multimedia_inbox_items(&mut connection, &project_id).await?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn update_multimedia_inbox_assignment(
+    app: AppHandle,
+    project_id: String,
+    item_id: String,
+    shot_id: String,
+    role: String,
+) -> Result<Vec<MultimediaInboxItem>, String> {
+    validate_id(&project_id)?;
+    validate_id(&shot_id)?;
+    if !matches!(role.as_str(), "storyboard" | "first_frame" | "video_final") {
+        return Err("El tipo de medio no es valido.".to_owned());
+    }
+    let mut connection = SqliteConnection::connect_with(&database_options(&app)?)
+        .await
+        .map_err(database_error)?;
+    let kind = sqlx::query_scalar::<_, String>(
+        "SELECT kind FROM multimedia_inbox WHERE id = ? AND project_id = ? LIMIT 1",
+    )
+    .bind(&item_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?
+    .ok_or("El archivo ya no esta en la bandeja.")?;
+    if (kind == "video") != (role == "video_final") {
+        return Err("El tipo elegido no coincide con el archivo.".to_owned());
+    }
+    let shot_code = sqlx::query_scalar::<_, String>(
+        "SELECT code FROM shots WHERE id = ? AND project_id = ? LIMIT 1",
+    )
+    .bind(&shot_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?
+    .ok_or("El plano elegido ya no existe.")?;
+    sqlx::query(
+        "UPDATE multimedia_inbox
+            SET shot_id = ?, detected_shot_code = ?, role = ?, status = 'ready',
+                detection_note = 'Asignacion revisada manualmente.', error_message = NULL,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = ? AND project_id = ?",
+    )
+    .bind(&shot_id)
+    .bind(&shot_code)
+    .bind(&role)
+    .bind(&item_id)
+    .bind(&project_id)
+    .execute(&mut connection)
+    .await
+    .map_err(database_error)?;
+    multimedia_inbox_items(&mut connection, &project_id).await
+}
+
+#[tauri::command]
+async fn remove_multimedia_inbox_item(
+    app: AppHandle,
+    project_id: String,
+    item_id: String,
+) -> Result<Vec<MultimediaInboxItem>, String> {
+    validate_id(&project_id)?;
+    let mut connection = SqliteConnection::connect_with(&database_options(&app)?)
+        .await
+        .map_err(database_error)?;
+    let staged_path = sqlx::query_scalar::<_, String>(
+        "SELECT staged_path FROM multimedia_inbox WHERE id = ? AND project_id = ? LIMIT 1",
+    )
+    .bind(&item_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?;
+    if let Some(staged_path) = staged_path {
+        let path = PathBuf::from(staged_path);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("No se pudo quitar {}: {error}", path.display()))?;
+        }
+        sqlx::query("DELETE FROM multimedia_inbox WHERE id = ? AND project_id = ?")
+            .bind(&item_id)
+            .bind(&project_id)
+            .execute(&mut connection)
+            .await
+            .map_err(database_error)?;
+    }
+    multimedia_inbox_items(&mut connection, &project_id).await
+}
+
+#[tauri::command]
+async fn process_multimedia_inbox(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    item_ids: Vec<String>,
+) -> Result<MultimediaProcessResult, String> {
+    validate_id(&project_id)?;
+    for item_id in &item_ids {
+        validate_id(item_id)?;
+    }
+    if item_ids.is_empty() {
+        return Ok(MultimediaProcessResult {
+            processed: 0,
+            failed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    let options = database_options(&app)?;
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let rows = sqlx::query(
+        "SELECT id, staged_path, original_filename, sha256, shot_id, role
+           FROM multimedia_inbox
+          WHERE project_id = ? AND status = 'ready'
+          ORDER BY created_at, original_filename",
+    )
+    .bind(&project_id)
+    .fetch_all(&mut connection)
+    .await
+    .map_err(database_error)?;
+    connection.close().await.map_err(database_error)?;
+
+    let mut result = MultimediaProcessResult {
+        processed: 0,
+        failed: 0,
+        errors: Vec::new(),
+    };
+    for row in rows {
+        let item_id = row.try_get::<String, _>("id").map_err(database_error)?;
+        if !item_ids.iter().any(|selected| selected == &item_id) {
+            continue;
+        }
+        let staged_path = row
+            .try_get::<String, _>("staged_path")
+            .map_err(database_error)?;
+        let original_filename = row
+            .try_get::<String, _>("original_filename")
+            .map_err(database_error)?;
+        let expected_hash = row.try_get::<String, _>("sha256").map_err(database_error)?;
+        let shot_id = row
+            .try_get::<Option<String>, _>("shot_id")
+            .map_err(database_error)?;
+        let role = row
+            .try_get::<Option<String>, _>("role")
+            .map_err(database_error)?;
+        let source_path = PathBuf::from(&staged_path);
+
+        let import_result = async {
+            let shot_id = shot_id.ok_or_else(|| "Falta elegir el plano de destino.".to_owned())?;
+            let role = role.ok_or_else(|| "Falta elegir el tipo de medio.".to_owned())?;
+            if !source_path.is_file() {
+                return Err("La copia de la bandeja ya no existe.".to_owned());
+            }
+            if file_sha256(&source_path)? != expected_hash {
+                return Err("La copia de la bandeja cambió desde que fue verificada.".to_owned());
+            }
+            import_shot_media(
+                app.clone(),
+                project_id.clone(),
+                project_number,
+                project_name.clone(),
+                shot_id,
+                vec![staged_path.clone()],
+                role,
+                false,
+            )
+            .await
+            .map(|_| ())
+        }
+        .await;
+
+        let mut item_connection = SqliteConnection::connect_with(&options)
+            .await
+            .map_err(database_error)?;
+        match import_result {
+            Ok(()) => {
+                sqlx::query(
+                    "UPDATE assets SET original_filename = ?
+                      WHERE project_id = ? AND sha256 = ?",
+                )
+                .bind(&original_filename)
+                .bind(&project_id)
+                .bind(&expected_hash)
+                .execute(&mut item_connection)
+                .await
+                .map_err(database_error)?;
+                sqlx::query("DELETE FROM multimedia_inbox WHERE id = ? AND project_id = ?")
+                    .bind(&item_id)
+                    .bind(&project_id)
+                    .execute(&mut item_connection)
+                    .await
+                    .map_err(database_error)?;
+                result.processed += 1;
+                if let Err(error) = fs::remove_file(&source_path)
+                    && error.kind() != io::ErrorKind::NotFound
+                {
+                    result.errors.push(format!(
+                        "El archivo se importó, pero no se pudo limpiar su copia temporal: {error}"
+                    ));
+                }
+            }
+            Err(error) => {
+                sqlx::query(
+                    "UPDATE multimedia_inbox
+                        SET status = 'error', error_message = ?,
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                      WHERE id = ? AND project_id = ?",
+                )
+                .bind(&error)
+                .bind(&item_id)
+                .bind(&project_id)
+                .execute(&mut item_connection)
+                .await
+                .map_err(database_error)?;
+                result.failed += 1;
+                result.errors.push(format!("{original_filename}: {error}"));
+            }
+        }
+        item_connection.close().await.map_err(database_error)?;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1627,6 +2206,15 @@ async fn import_shot_media(
             "video_final" => format!("{shot_code}_video_v{:02}.{extension}", next_order + 1),
             _ => format!("{shot_code}_primer_frame.{extension}"),
         });
+        if destination_path.is_file() && source_path != destination_path {
+            let destination_hash = file_sha256(&destination_path)?;
+            if destination_hash != sha256 && !replace_existing {
+                return Err(format!(
+                    "{} ya tiene un archivo distinto. Revisalo antes de reemplazarlo.",
+                    shot_code
+                ));
+            }
+        }
         let existing_asset =
             sqlx::query_scalar::<_, String>("SELECT id FROM assets WHERE sha256 = ? LIMIT 1")
                 .bind(&sha256)
@@ -1644,6 +2232,13 @@ async fn import_shot_media(
                         source_path.display()
                     )
                 })?;
+                if file_sha256(&destination_path)? != sha256 {
+                    let _ = fs::remove_file(&destination_path);
+                    return Err(format!(
+                        "La copia de {} no coincide byte por byte con el original.",
+                        original_filename
+                    ));
+                }
             }
             let asset_id = format!("local-{}", &sha256[..24]);
             let byte_size = fs::metadata(&destination_path)
@@ -2430,6 +3025,12 @@ pub fn run() {
             sql: include_str!("../migrations/0005_video_technical_details.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "multimedia_inbox",
+            sql: include_str!("../migrations/0006_multimedia_inbox.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -2460,6 +3061,11 @@ pub fn run() {
             open_shot_workspace,
             import_source_documents,
             rescan_source_document,
+            list_multimedia_inbox,
+            stage_multimedia_paths,
+            update_multimedia_inbox_assignment,
+            remove_multimedia_inbox_item,
+            process_multimedia_inbox,
             import_media_folder,
             sync_project_workspace,
             import_shot_media,
@@ -2495,6 +3101,90 @@ mod tests {
             Some("P027")
         );
         assert_eq!(shot_code_from_filename(Path::new("resultado.mp4")), None);
+        assert_eq!(
+            detected_shot_code(Path::new(
+                "C:/Produccion/P042 - Llegada/Video/render_final.mp4"
+            ))
+            .as_deref(),
+            Some("P042")
+        );
+    }
+
+    #[test]
+    fn staged_media_names_are_safe_and_bounded() {
+        assert_eq!(safe_staged_filename("Plano 01?.png"), "Plano_01_.png");
+        let long_name = format!("{}.png", "fotograma ".repeat(30));
+        let staged_name = safe_staged_filename(&long_name);
+        assert!(staged_name.chars().count() <= 110);
+        assert!(staged_name.ends_with(".png"));
+    }
+
+    #[test]
+    fn multimedia_inbox_migration_enforces_a_valid_review_queue() {
+        tauri::async_runtime::block_on(async {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let database_path = env::temp_dir().join(format!(
+                "storyboard-wana-multimedia-inbox-{}-{nonce}.db",
+                std::process::id()
+            ));
+            let options = SqliteConnectOptions::new()
+                .filename(&database_path)
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let mut connection = SqliteConnection::connect_with(&options)
+                .await
+                .expect("create test database");
+            sqlx::raw_sql(
+                "CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL);
+                 CREATE TABLE shots (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   project_id TEXT NOT NULL,
+                   code TEXT NOT NULL,
+                   title TEXT NOT NULL,
+                   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+                 );",
+            )
+            .execute(&mut connection)
+            .await
+            .expect("create migration prerequisites");
+            sqlx::raw_sql(include_str!("../migrations/0006_multimedia_inbox.sql"))
+                .execute(&mut connection)
+                .await
+                .expect("apply multimedia inbox migration");
+            sqlx::raw_sql(
+                "INSERT INTO projects (id) VALUES ('project-test');
+                 INSERT INTO shots (id, project_id, code, title)
+                   VALUES ('shot-test', 'project-test', 'P001', 'Inicio');
+                 INSERT INTO multimedia_inbox (
+                   id, project_id, original_path, staged_path, original_filename,
+                   kind, mime_type, byte_size, sha256, shot_id,
+                   detected_shot_code, role, status, detection_note
+                 ) VALUES (
+                   'inbox-test', 'project-test', 'original.png', 'staged.png',
+                   'P001_PRIMER_FRAME.png', 'image', 'image/png', 4, 'hash-test',
+                   'shot-test', 'P001', 'first_frame', 'ready', 'Coincidencia segura.'
+                 );",
+            )
+            .execute(&mut connection)
+            .await
+            .expect("insert a valid inbox item");
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM multimedia_inbox
+                  WHERE project_id = 'project-test' AND status = 'ready'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .expect("read inbox item");
+            assert_eq!(count, 1);
+            connection.close().await.expect("close test database");
+
+            let _ = fs::remove_file(&database_path);
+            let _ = fs::remove_file(database_path.with_extension("db-wal"));
+            let _ = fs::remove_file(database_path.with_extension("db-shm"));
+        });
     }
 
     #[test]
@@ -2546,6 +3236,10 @@ mod tests {
         let workspace = ProjectWorkspaceResult {
             root_path: root.to_string_lossy().to_string(),
             sources_path: root.join("Fuentes").to_string_lossy().to_string(),
+            multimedia_inbox_path: root
+                .join("Bandeja multimedia")
+                .to_string_lossy()
+                .to_string(),
             shots_path: shots.to_string_lossy().to_string(),
             unassigned_path: root.join("Sin asignar").to_string_lossy().to_string(),
             exports_path: root.join("Exportaciones").to_string_lossy().to_string(),

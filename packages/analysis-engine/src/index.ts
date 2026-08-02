@@ -70,6 +70,12 @@ function compact(value: string | undefined | null) {
   return normalized ? normalized : null;
 }
 
+function videoPromptOnly(value: string | undefined | null) {
+  const prompt = value?.trim();
+  if (!prompt) return null;
+  return compact(prompt.replace(/\s*---\s*P[ÁA]GINA\s+\d+\s*---[\s\S]*$/i, ""));
+}
+
 function technicalMessageText(message: CaptureMessage) {
   const start = message.text.indexOf(framesyncStartMarker);
   if (start < 0) return message.text;
@@ -212,8 +218,8 @@ function labeledShotSection(lines: string[], label: RegExp) {
   });
   if (start < 0) return null;
   const firstMatch = lines[start]!.match(label);
-  const values = [compact(firstMatch?.[1])].filter(
-    (value): value is string => Boolean(value),
+  const values = [compact(firstMatch?.[1])].filter((value): value is string =>
+    Boolean(value),
   );
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index]!;
@@ -279,9 +285,11 @@ function extractVideoTechnical(
     camera,
     lens: detectLens(camera, explicitLens),
     shotType:
-      explicitShotType ?? detectFraming([videoPrompt, camera].filter(Boolean).join(" ")),
+      explicitShotType ??
+      detectFraming([videoPrompt, camera].filter(Boolean).join(" ")),
     angle:
-      explicitAngle ?? detectAngle([videoPrompt, camera].filter(Boolean).join(" ")),
+      explicitAngle ??
+      detectAngle([videoPrompt, camera].filter(Boolean).join(" ")),
     movement: detectVideoMovement(camera, explicitMovement),
     lighting: technicalSection(
       /^VIDEO\s*[-—:]?\s*ILUMINACI[ÓO]N\s*:?[\s]*(.*)$/i,
@@ -824,9 +832,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       shot.videoTechnical = Object.fromEntries(
         Object.entries(extractedTechnical).map(([key, value]) => [
           key,
-          value ??
-            shot.videoTechnical[key as keyof VideoTechnical] ??
-            null,
+          value ?? shot.videoTechnical[key as keyof VideoTechnical] ?? null,
         ]),
       ) as VideoTechnical;
     }
@@ -1002,6 +1008,16 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         .filter((shot) => !shot.estimatedDurationMs)
         .flatMap((shot) => shot.sourceMessageIds),
     });
+  }
+
+  // Los marcadores de página pertenecen a la fuente, no al prompt que se
+  // copia en un generador de video. Se limpia al final para cubrir todos los
+  // formatos de captura (bloques explícitos, PDF y recuperación heredada).
+  for (const shot of shots) {
+    shot.videoPrompt = videoPromptOnly(shot.videoPrompt);
+  }
+  for (const prompt of videoPrompts) {
+    prompt.text = videoPromptOnly(prompt.text) ?? "";
   }
 
   const resultWithoutSummary = {

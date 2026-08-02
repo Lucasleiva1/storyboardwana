@@ -28,7 +28,7 @@ const navigation: Array<{
   { id: "characters", label: "Personajes", icon: Users },
   { id: "locations", label: "Escenarios", icon: MapPin },
   { id: "shots", label: "Escenas y planos", icon: Rows3 },
-  { id: "media", label: "Medios", icon: Images },
+  { id: "media", label: "Multimedia", icon: Images },
   { id: "timeline", label: "Timeline", icon: Clapperboard },
   { id: "settings", label: "Configuración", icon: Settings },
 ];

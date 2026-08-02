@@ -41,6 +41,14 @@ function formatDuration(milliseconds: number | null) {
   return `${(milliseconds / 1_000).toFixed(milliseconds % 1_000 ? 1 : 0)} s`;
 }
 
+function videoPromptOnly(value: string | null | undefined) {
+  const prompt = value?.trim();
+  if (!prompt) return null;
+  return (
+    prompt.replace(/\s*---\s*P[ÁA]GINA\s+\d+\s*---[\s\S]*$/i, "").trim() || null
+  );
+}
+
 function CardRotateIcon({ size = 16 }: { size?: number }) {
   return (
     <svg
@@ -369,6 +377,7 @@ function ProductionShotRow({
 }) {
   const [flipped, setFlipped] = useState(false);
   const storyboard = shot.storyboardPaths?.[0] ?? null;
+  const videoPrompt = videoPromptOnly(shot.videoPrompt);
 
   return (
     <article className={`production-shot-row ${flipped ? "flipped" : ""}`}>
@@ -447,9 +456,7 @@ function ProductionShotRow({
                   : undefined
               }
               prompt={shot.visualDescription}
-              onChangePrompt={(value) =>
-                onChangePrompt("storyboard", value)
-              }
+              onChangePrompt={(value) => onChangePrompt("storyboard", value)}
               onAdvanced={onAdvanced}
               onRemove={() => onRemoveMedia("storyboard")}
             />
@@ -489,10 +496,8 @@ function ProductionShotRow({
             />
 
             <VideoPromptCard
-              shot={shot}
-              onCopy={() =>
-                void onCopyText(shot.videoPrompt, "Prompt de video")
-              }
+              shot={{ ...shot, videoPrompt }}
+              onCopy={() => void onCopyText(videoPrompt, "Prompt de video")}
               onUploadVideo={() =>
                 void onChooseImages(shot, "video_final", true)
               }
@@ -631,30 +636,30 @@ function VisualCard({
           </button>
           {path && (
             <>
-            <button
-              type="button"
-              onClick={onCopy}
-              aria-label="Copiar imagen"
-              title="Copiar imagen"
-            >
-              <Copy size={15} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              onClick={onRemove}
-              aria-label="Quitar imagen de la tarjeta"
-              title="Quitar de la interfaz (el archivo se conserva)"
-            >
-              <Trash2 size={15} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              onClick={onView}
-              aria-label="Ampliar imagen"
-              title="Ampliar imagen"
-            >
-              <Maximize2 size={15} aria-hidden="true" />
-            </button>
+              <button
+                type="button"
+                onClick={onCopy}
+                aria-label="Copiar imagen"
+                title="Copiar imagen"
+              >
+                <Copy size={15} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={onRemove}
+                aria-label="Quitar imagen de la tarjeta"
+                title="Quitar de la interfaz (el archivo se conserva)"
+              >
+                <Trash2 size={15} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={onView}
+                aria-label="Ampliar imagen"
+                title="Ampliar imagen"
+              >
+                <Maximize2 size={15} aria-hidden="true" />
+              </button>
             </>
           )}
         </div>
@@ -922,7 +927,11 @@ function PromptBlock({
             setDraft(prompt ?? "");
             setEditing(false);
           }
-          if (editing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          if (
+            editing &&
+            event.key === "Enter" &&
+            (event.ctrlKey || event.metaKey)
+          ) {
             event.preventDefault();
             event.currentTarget.blur();
           }
