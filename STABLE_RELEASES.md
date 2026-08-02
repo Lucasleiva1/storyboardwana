@@ -2,6 +2,18 @@
 
 Este archivo registra los puntos estables publicados en GitHub para poder identificar y recuperar el estado de la aplicación.
 
+## Guardado estable Nº 005
+
+- Versión: `0.1.6`
+- Etiqueta Git: `app-v0.1.6`
+- Nombre: **Storyboard Wana - Carpetas independientes por plano**
+- Día: domingo 2 de agosto de 2026
+- Hora local del guardado: 00:02:53 (`America/Buenos_Aires`, UTC-3)
+- Rama: `main`
+- Estado: estable
+- Instalador de escritorio: `Storyboard_Wana_0.1.6_x64-setup.exe`
+- Contenido principal: carpeta automática para cada plano, storyboard y primer frame en la raíz del plano, subcarpeta exclusiva `Video`, acceso a la carpeta general del plano y acceso directo a `Video` desde su tarjeta, además de migración segura de medios existentes.
+
 ## Guardado estable Nº 004
 
 - Versión: `0.1.4`

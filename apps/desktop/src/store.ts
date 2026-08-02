@@ -48,9 +48,8 @@ type InboxSummary = {
 type ProjectWorkspace = {
   rootPath: string;
   sourcesPath: string;
-  storyboardsPath: string;
-  firstFramesPath: string;
-  videosPath: string;
+  shotsPath: string;
+  unassignedPath: string;
   exportsPath: string;
 };
 
@@ -118,6 +117,7 @@ type StoreState = {
   ) => Promise<void>;
   syncProjectWorkspace: () => Promise<void>;
   openProjectWorkspace: () => Promise<void>;
+  openShotWorkspace: (shotId: string, videoOnly?: boolean) => Promise<void>;
   buildStressDataset: () => void;
   clearError: () => void;
 };
@@ -142,6 +142,15 @@ function compactStoreId(value: string) {
 
 async function prepareProjectWorkspace(project: Project) {
   return invoke<ProjectWorkspace>("prepare_project_workspace", {
+    projectNumber: project.projectNumber,
+    projectName: project.name,
+  });
+}
+
+async function prepareProjectShotWorkspaces(project: Project) {
+  if (!isTauriRuntime()) return;
+  await invoke("prepare_project_shot_workspaces", {
+    projectId: project.id,
     projectNumber: project.projectNumber,
     projectName: project.name,
   });
@@ -440,6 +449,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
           loadProduction(project.id),
         ]);
       }
+      await prepareProjectShotWorkspaces(project);
       set({
         project,
         sources,
@@ -668,6 +678,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
           synchronizeSourceShots: true,
         });
         production = await loadProduction(project.id);
+        await prepareProjectShotWorkspaces(project);
       }
       const sources = await listSources(project.id);
       set({
@@ -780,6 +791,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
         { synchronizeSourceShots: true },
       );
       const production = await loadProduction(project.id);
+      await prepareProjectShotWorkspaces(project);
       const fallbackProduction = fallbackProductionFrom(proposal);
       set((state) => ({
         production:
@@ -822,6 +834,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
         source.proposal,
       );
       const production = await loadProduction(project.id);
+      await prepareProjectShotWorkspaces(project);
       const fallbackProduction = fallbackProductionFrom(source.proposal);
       set((state) => ({
         production:
@@ -993,6 +1006,7 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
     try {
       await createManualShotRecords(project.id, names);
       const production = await loadProduction(project.id);
+      await prepareProjectShotWorkspaces(project);
       set({ production, activeView: "shots", busy: false, importResult: null });
     } catch (error) {
       set({
@@ -1079,6 +1093,29 @@ export const useFrameSyncStore = create<StoreState>((set, get) => ({
     } catch (error) {
       set({
         error: errorMessage(error, "No se pudo abrir la carpeta del proyecto."),
+      });
+    }
+  },
+
+  async openShotWorkspace(shotId, videoOnly = false) {
+    const project = get().project;
+    if (!project) return;
+    try {
+      await invoke("open_shot_workspace", {
+        projectId: project.id,
+        projectNumber: project.projectNumber,
+        projectName: project.name,
+        shotId,
+        videoOnly,
+      });
+    } catch (error) {
+      set({
+        error: errorMessage(
+          error,
+          videoOnly
+            ? "No se pudo abrir la carpeta de video del plano."
+            : "No se pudo abrir la carpeta del plano.",
+        ),
       });
     }
   },

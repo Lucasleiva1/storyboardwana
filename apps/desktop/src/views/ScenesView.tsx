@@ -77,6 +77,7 @@ export function ScenesView() {
     detachShotMedia,
     syncProjectWorkspace,
     openProjectWorkspace,
+    openShotWorkspace,
     workspacePath,
     busy,
   } = useFrameSyncStore();
@@ -252,6 +253,8 @@ export function ScenesView() {
                 setViewer({ path, label, shot, role, kind })
               }
               onAdvanced={() => setAdvancedShot(shot)}
+              onOpenFolder={() => void openShotWorkspace(shot.id)}
+              onOpenVideoFolder={() => void openShotWorkspace(shot.id, true)}
               onChangePrompt={(role, value) => {
                 const updated = {
                   ...shot,
@@ -335,6 +338,8 @@ function ProductionShotRow({
   onChooseImages,
   onViewMedia,
   onAdvanced,
+  onOpenFolder,
+  onOpenVideoFolder,
   onChangePrompt,
   onRemoveMedia,
 }: {
@@ -354,6 +359,8 @@ function ProductionShotRow({
     kind: "image" | "video",
   ) => void;
   onAdvanced: () => void;
+  onOpenFolder: () => void;
+  onOpenVideoFolder: () => void;
   onChangePrompt: (
     role: "storyboard" | "image" | "video",
     value: string,
@@ -380,6 +387,15 @@ function ProductionShotRow({
                   ? "PRIMER FRAME LISTO"
                   : "PRIMER FRAME PENDIENTE"}
               </span>
+              <button
+                type="button"
+                className="shot-heading-icon-button"
+                onClick={onOpenFolder}
+                aria-label="Abrir carpeta del plano"
+                title="Abrir carpeta del plano"
+              >
+                <FolderOpen size={17} aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 className="shot-heading-icon-button"
@@ -494,6 +510,7 @@ function ProductionShotRow({
                   : undefined
               }
               onAdvanced={onAdvanced}
+              onOpenFolder={onOpenVideoFolder}
             />
           </div>
         </section>
@@ -664,6 +681,7 @@ function VideoPromptCard({
   onChangePrompt,
   onViewVideo,
   onAdvanced,
+  onOpenFolder,
 }: {
   shot: ProductionShot;
   onCopy: () => void;
@@ -672,6 +690,7 @@ function VideoPromptCard({
   onChangePrompt: (value: string) => void;
   onViewVideo?: () => void;
   onAdvanced: () => void;
+  onOpenFolder: () => void;
 }) {
   const [flipped, setFlipped] = useState(false);
   const technical = shot.videoTechnical;
@@ -716,6 +735,14 @@ function VideoPromptCard({
                   ? `${shot.videoPaths?.length ?? 1} VIDEO(S)`
                   : "PENDIENTE"}
               </small>
+              <button
+                type="button"
+                onClick={onOpenFolder}
+                aria-label="Abrir carpeta de video del plano"
+                title="Abrir carpeta de video"
+              >
+                <FolderOpen size={16} aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 onClick={() => setFlipped(true)}

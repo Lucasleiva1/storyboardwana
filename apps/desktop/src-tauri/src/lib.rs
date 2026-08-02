@@ -84,10 +84,18 @@ struct ShotMediaImportResult {
 struct ProjectWorkspaceResult {
     root_path: String,
     sources_path: String,
-    storyboards_path: String,
-    first_frames_path: String,
-    videos_path: String,
+    shots_path: String,
+    unassigned_path: String,
     exports_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShotWorkspaceResult {
+    root_path: String,
+    storyboard_path: String,
+    first_frame_path: String,
+    video_path: String,
 }
 
 fn safe_folder_component(value: &str) -> String {
@@ -151,28 +159,64 @@ fn ensure_project_workspace(
         }
     }
     let sources = desired_root.join("Fuentes");
-    let storyboards = desired_root.join("Storyboards");
-    let first_frames = desired_root.join("Primeros frames");
-    let videos = desired_root.join("Videos");
+    let shots = desired_root.join("Planos");
+    let unassigned = desired_root.join("Sin asignar");
     let exports = desired_root.join("Exportaciones");
-    for path in [
-        &desired_root,
-        &sources,
-        &storyboards,
-        &first_frames,
-        &videos,
-        &exports,
-    ] {
+    for path in [&desired_root, &sources, &shots, &unassigned, &exports] {
         fs::create_dir_all(path)
             .map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
     }
     Ok(ProjectWorkspaceResult {
         root_path: desired_root.to_string_lossy().to_string(),
         sources_path: sources.to_string_lossy().to_string(),
-        storyboards_path: storyboards.to_string_lossy().to_string(),
-        first_frames_path: first_frames.to_string_lossy().to_string(),
-        videos_path: videos.to_string_lossy().to_string(),
+        shots_path: shots.to_string_lossy().to_string(),
+        unassigned_path: unassigned.to_string_lossy().to_string(),
         exports_path: exports.to_string_lossy().to_string(),
+    })
+}
+
+fn ensure_shot_workspace(
+    workspace: &ProjectWorkspaceResult,
+    shot_code: &str,
+    shot_title: &str,
+) -> Result<ShotWorkspaceResult, String> {
+    let shots_root = PathBuf::from(&workspace.shots_path);
+    fs::create_dir_all(&shots_root)
+        .map_err(|error| format!("No se pudo crear {}: {error}", shots_root.display()))?;
+    let safe_code = safe_folder_component(shot_code);
+    let prefix = format!("{safe_code} - ");
+    let desired_root = shots_root.join(format!("{prefix}{}", safe_folder_component(shot_title)));
+    if !desired_root.exists()
+        && let Ok(entries) = fs::read_dir(&shots_root)
+    {
+        let previous = entries.flatten().map(|entry| entry.path()).find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == safe_code || name.starts_with(&prefix))
+        });
+        if let Some(previous) = previous
+            && previous != desired_root
+        {
+            fs::rename(&previous, &desired_root).map_err(|error| {
+                format!(
+                    "No se pudo actualizar la carpeta del plano {}: {error}",
+                    previous.display()
+                )
+            })?;
+        }
+    }
+    let video = desired_root.join("Video");
+    for path in [&desired_root, &video] {
+        fs::create_dir_all(path)
+            .map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
+    }
+    Ok(ShotWorkspaceResult {
+        root_path: desired_root.to_string_lossy().to_string(),
+        storyboard_path: desired_root.to_string_lossy().to_string(),
+        first_frame_path: desired_root.to_string_lossy().to_string(),
+        video_path: video.to_string_lossy().to_string(),
     })
 }
 
@@ -196,6 +240,57 @@ fn open_project_workspace(
         .arg(&workspace.root_path)
         .spawn()
         .map_err(|error| format!("No se pudo abrir la carpeta del proyecto: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_shot_workspace(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    shot_id: String,
+    video_only: bool,
+) -> Result<(), String> {
+    validate_id(&project_id)?;
+    validate_id(&shot_id)?;
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontro la base local: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let shot = sqlx::query("SELECT code, title FROM shots WHERE id = ? AND project_id = ? LIMIT 1")
+        .bind(&shot_id)
+        .bind(&project_id)
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(database_error)?;
+    let Some(shot) = shot else {
+        return Err("El plano ya no existe en este proyecto.".to_owned());
+    };
+    let shot_code = shot.try_get::<String, _>("code").map_err(database_error)?;
+    let shot_title = shot.try_get::<String, _>("title").map_err(database_error)?;
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    let shot_workspace = ensure_shot_workspace(&workspace, &shot_code, &shot_title)?;
+    let target = if video_only {
+        &shot_workspace.video_path
+    } else {
+        &shot_workspace.root_path
+    };
+    Command::new("explorer.exe")
+        .arg(target)
+        .spawn()
+        .map_err(|error| format!("No se pudo abrir la carpeta del plano: {error}"))?;
     Ok(())
 }
 
@@ -1009,6 +1104,19 @@ async fn import_media_folder(
             .to_string_lossy()
             .to_string();
         let role = media_role(&source_path, kind);
+        let shot_code = shot_code_from_filename(&source_path);
+        let shot = if let Some(code) = &shot_code {
+            sqlx::query(
+                "SELECT id, code, title FROM shots WHERE project_id = ? AND code = ? LIMIT 1",
+            )
+            .bind(&project_id)
+            .bind(code)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        } else {
+            None
+        };
         let safe_filename = original_filename
             .chars()
             .map(|character| {
@@ -1019,13 +1127,24 @@ async fn import_media_folder(
                 }
             })
             .collect::<String>();
-        let role_root = match role {
-            "storyboard" => PathBuf::from(&workspace.storyboards_path),
-            "first_frame" | "last_frame" => PathBuf::from(&workspace.first_frames_path),
-            "video_final" => PathBuf::from(&workspace.videos_path),
-            _ => destination_root.clone(),
+        let role_root = if let Some(shot) = &shot {
+            let code = shot.try_get::<String, _>("code").map_err(database_error)?;
+            let title = shot.try_get::<String, _>("title").map_err(database_error)?;
+            let shot_workspace = ensure_shot_workspace(&workspace, &code, &title)?;
+            if role == "video_final" {
+                PathBuf::from(shot_workspace.video_path)
+            } else {
+                PathBuf::from(shot_workspace.root_path)
+            }
+        } else {
+            PathBuf::from(&workspace.unassigned_path)
         };
-        let destination_path = if source_path.starts_with(&destination_root) {
+        fs::create_dir_all(&role_root)
+            .map_err(|error| format!("No se pudo preparar {}: {error}", role_root.display()))?;
+        let destination_path = if source_path
+            .parent()
+            .is_some_and(|parent| parent == role_root)
+        {
             source_path.clone()
         } else {
             role_root.join(safe_filename)
@@ -1038,6 +1157,29 @@ async fn import_media_folder(
                 .map_err(database_error)?;
         let asset_id = if let Some(asset_id) = existing_asset {
             result.duplicates += 1;
+            if shot.is_some() {
+                if source_path != destination_path && !destination_path.exists() {
+                    fs::copy(&source_path, &destination_path).map_err(|error| {
+                        format!(
+                            "No se pudo ordenar {} dentro de su plano: {error}",
+                            source_path.display()
+                        )
+                    })?;
+                }
+                sqlx::query(
+                    "UPDATE assets
+                        SET stored_path = ?, local_path = ?, related_shot_code = ?
+                      WHERE id = ? AND project_id = ?",
+                )
+                .bind(destination_path.to_string_lossy().to_string())
+                .bind(destination_path.to_string_lossy().to_string())
+                .bind(&shot_code)
+                .bind(&asset_id)
+                .bind(&project_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+            }
             asset_id
         } else {
             if source_path != destination_path {
@@ -1049,7 +1191,6 @@ async fn import_media_folder(
                 })?;
             }
             let asset_id = format!("local-{}", &sha256[..24]);
-            let related_shot_code = shot_code_from_filename(&source_path);
             let byte_size = fs::metadata(&destination_path)
                 .map_err(|error| format!("No se pudo medir el archivo copiado: {error}"))?
                 .len() as i64;
@@ -1072,7 +1213,7 @@ async fn import_media_folder(
             .bind(&original_filename)
             .bind(destination_path.to_string_lossy().to_string())
             .bind(destination_path.to_string_lossy().to_string())
-            .bind(&related_shot_code)
+            .bind(&shot_code)
             .bind(mime_type)
             .bind(byte_size)
             .bind(&sha256)
@@ -1083,19 +1224,11 @@ async fn import_media_folder(
             asset_id
         };
 
-        let shot_code = shot_code_from_filename(&source_path);
-        let shot_id = if let Some(code) = &shot_code {
-            sqlx::query_scalar::<_, String>(
-                "SELECT id FROM shots WHERE project_id = ? AND code = ? LIMIT 1",
-            )
-            .bind(&project_id)
-            .bind(code)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(database_error)?
-        } else {
-            None
-        };
+        let shot_id = shot
+            .as_ref()
+            .map(|row| row.try_get::<String, _>("id"))
+            .transpose()
+            .map_err(database_error)?;
         if let Some(shot_id) = shot_id {
             let is_detached = sqlx::query_scalar::<_, i64>(
                 "SELECT 1 FROM detached_shot_assets
@@ -1185,6 +1318,17 @@ async fn import_media_folder(
 }
 
 #[tauri::command]
+async fn prepare_project_shot_workspaces(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+) -> Result<(), String> {
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    ensure_project_shot_workspaces(&app, &project_id, &workspace).await
+}
+
+#[tauri::command]
 async fn sync_project_workspace(
     app: AppHandle,
     project_id: String,
@@ -1192,6 +1336,7 @@ async fn sync_project_workspace(
     project_name: String,
 ) -> Result<MediaFolderImportResult, String> {
     let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    ensure_project_shot_workspaces(&app, &project_id, &workspace).await?;
     migrate_project_assets(&app, &project_id, &workspace).await?;
     import_media_folder(
         app,
@@ -1201,6 +1346,41 @@ async fn sync_project_workspace(
         workspace.root_path,
     )
     .await
+}
+
+async fn ensure_project_shot_workspaces(
+    app: &AppHandle,
+    project_id: &str,
+    workspace: &ProjectWorkspaceResult,
+) -> Result<(), String> {
+    validate_id(project_id)?;
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontro la base local: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let rows =
+        sqlx::query("SELECT code, title FROM shots WHERE project_id = ? ORDER BY order_index")
+            .bind(project_id)
+            .fetch_all(&mut connection)
+            .await
+            .map_err(database_error)?;
+    for row in rows {
+        let code = row.try_get::<String, _>("code").map_err(database_error)?;
+        let title = row.try_get::<String, _>("title").map_err(database_error)?;
+        ensure_shot_workspace(workspace, &code, &title)?;
+    }
+    Ok(())
 }
 
 async fn migrate_project_assets(
@@ -1226,24 +1406,28 @@ async fn migrate_project_assets(
     let rows = sqlx::query(
         "SELECT asset.id, asset.local_path, asset.kind, asset.role AS asset_role,
                 asset.original_filename, asset.sha256,
-                link.role AS link_role, link.order_index, shot.code AS shot_code
+                link.role AS link_role, link.order_index,
+                COALESCE(shot.code, related_shot.code) AS shot_code,
+                COALESCE(shot.title, related_shot.title) AS shot_title
          FROM assets asset
          LEFT JOIN shot_assets link ON link.asset_id = asset.id
          LEFT JOIN shots shot ON shot.id = link.shot_id
+         LEFT JOIN shots related_shot
+           ON related_shot.project_id = asset.project_id
+          AND related_shot.code = asset.related_shot_code
          WHERE asset.project_id = ? AND asset.local_path IS NOT NULL",
     )
     .bind(project_id)
     .fetch_all(&mut connection)
     .await
     .map_err(database_error)?;
-    let workspace_root = PathBuf::from(&workspace.root_path);
     for row in rows {
         let asset_id = row.try_get::<String, _>("id").map_err(database_error)?;
         let local_path = row
             .try_get::<String, _>("local_path")
             .map_err(database_error)?;
         let source = PathBuf::from(&local_path);
-        if source.starts_with(&workspace_root) || !source.is_file() {
+        if !source.is_file() {
             continue;
         }
         let role = row
@@ -1257,44 +1441,54 @@ async fn migrate_project_assets(
         let shot_code = row
             .try_get::<Option<String>, _>("shot_code")
             .map_err(database_error)?;
+        let shot_title = row
+            .try_get::<Option<String>, _>("shot_title")
+            .map_err(database_error)?;
         let order = row
             .try_get::<Option<i64>, _>("order_index")
             .map_err(database_error)?
             .unwrap_or(0);
-        let extension = source
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("bin")
-            .to_ascii_lowercase();
         let original = row
             .try_get::<Option<String>, _>("original_filename")
             .map_err(database_error)?
-            .unwrap_or_else(|| format!("archivo.{extension}"));
+            .unwrap_or_else(|| "archivo.bin".to_owned());
+        let extension = source
+            .extension()
+            .or_else(|| Path::new(&original).extension())
+            .and_then(|value| value.to_str())
+            .unwrap_or("bin")
+            .to_ascii_lowercase();
         let sha256 = row.try_get::<String, _>("sha256").map_err(database_error)?;
+        let shot_workspace = match (shot_code.as_deref(), shot_title.as_deref()) {
+            (Some(code), Some(title)) => Some(ensure_shot_workspace(workspace, code, title)?),
+            _ => None,
+        };
         let (directory, filename) = if kind == "document" {
             (PathBuf::from(&workspace.sources_path), original.clone())
         } else {
-            match (role.as_str(), shot_code.as_deref()) {
-                ("storyboard", Some(code)) => (
-                    PathBuf::from(&workspace.storyboards_path),
+            match (role.as_str(), shot_code.as_deref(), shot_workspace.as_ref()) {
+                ("storyboard", Some(code), Some(shot_workspace)) => (
+                    PathBuf::from(&shot_workspace.storyboard_path),
                     format!("{code}_storyboard_{:02}.{extension}", order + 1),
                 ),
-                ("first_frame", Some(code)) => (
-                    PathBuf::from(&workspace.first_frames_path),
+                ("first_frame", Some(code), Some(shot_workspace)) => (
+                    PathBuf::from(&shot_workspace.first_frame_path),
                     format!("{code}_primer_frame.{extension}"),
                 ),
-                ("video_final", Some(code)) => (
-                    PathBuf::from(&workspace.videos_path),
+                ("video_final", Some(code), Some(shot_workspace)) => (
+                    PathBuf::from(&shot_workspace.video_path),
                     format!("{code}_video_v{:02}.{extension}", order + 1),
                 ),
                 _ => (
-                    workspace_root.clone(),
+                    PathBuf::from(&workspace.unassigned_path),
                     format!("{}_{}", &sha256[..12], safe_folder_component(&original)),
                 ),
             }
         };
         let destination = directory.join(filename);
-        if !destination.exists() {
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("No se pudo preparar {}: {error}", directory.display()))?;
+        if source != destination && !destination.exists() {
             fs::copy(&source, &destination)
                 .map_err(|error| format!("No se pudo migrar {}: {error}", source.display()))?;
         }
@@ -1334,17 +1528,6 @@ async fn import_shot_media(
         });
     }
     let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
-    let destination_root = match role.as_str() {
-        "storyboard" => PathBuf::from(&workspace.storyboards_path),
-        "video_final" => PathBuf::from(&workspace.videos_path),
-        _ => PathBuf::from(&workspace.first_frames_path),
-    };
-    fs::create_dir_all(&destination_root).map_err(|error| {
-        format!(
-            "No se pudo preparar {}: {error}",
-            destination_root.display()
-        )
-    })?;
     let database_path = app
         .path()
         .app_config_dir()
@@ -1360,17 +1543,28 @@ async fn import_shot_media(
     let mut connection = SqliteConnection::connect_with(&options)
         .await
         .map_err(database_error)?;
-    let shot_code = sqlx::query_scalar::<_, String>(
-        "SELECT code FROM shots WHERE id = ? AND project_id = ? LIMIT 1",
-    )
-    .bind(&shot_id)
-    .bind(&project_id)
-    .fetch_optional(&mut connection)
-    .await
-    .map_err(database_error)?;
-    let Some(shot_code) = shot_code else {
+    let shot = sqlx::query("SELECT code, title FROM shots WHERE id = ? AND project_id = ? LIMIT 1")
+        .bind(&shot_id)
+        .bind(&project_id)
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(database_error)?;
+    let Some(shot) = shot else {
         return Err("El plano ya no existe en este proyecto.".to_owned());
     };
+    let shot_code = shot.try_get::<String, _>("code").map_err(database_error)?;
+    let shot_title = shot.try_get::<String, _>("title").map_err(database_error)?;
+    let shot_workspace = ensure_shot_workspace(&workspace, &shot_code, &shot_title)?;
+    let destination_root = match role.as_str() {
+        "video_final" => PathBuf::from(&shot_workspace.video_path),
+        _ => PathBuf::from(&shot_workspace.root_path),
+    };
+    fs::create_dir_all(&destination_root).map_err(|error| {
+        format!(
+            "No se pudo preparar {}: {error}",
+            destination_root.display()
+        )
+    })?;
     let mut transaction = connection.begin().await.map_err(database_error)?;
     if replace_existing {
         sqlx::query(
@@ -2261,7 +2455,9 @@ pub fn run() {
             write_workspace_context,
             refresh_workspace_context,
             prepare_project_workspace,
+            prepare_project_shot_workspaces,
             open_project_workspace,
+            open_shot_workspace,
             import_source_documents,
             rescan_source_document,
             import_media_folder,
@@ -2334,6 +2530,38 @@ mod tests {
             "VIDEO_ REMERAS _ 2026"
         );
         assert_eq!(safe_folder_component("   "), "Sin titulo");
+    }
+
+    #[test]
+    fn shot_workspace_keeps_images_in_the_shot_and_videos_in_their_own_folder() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "storyboard-wana-shot-folder-{}-{nonce}",
+            std::process::id()
+        ));
+        let shots = root.join("Planos");
+        let workspace = ProjectWorkspaceResult {
+            root_path: root.to_string_lossy().to_string(),
+            sources_path: root.join("Fuentes").to_string_lossy().to_string(),
+            shots_path: shots.to_string_lossy().to_string(),
+            unassigned_path: root.join("Sin asignar").to_string_lossy().to_string(),
+            exports_path: root.join("Exportaciones").to_string_lossy().to_string(),
+        };
+
+        let shot = ensure_shot_workspace(&workspace, "P001", "La mansion").expect("shot folder");
+        let expected_root = shots.join("P001 - La mansion");
+        assert_eq!(PathBuf::from(&shot.root_path), expected_root);
+        assert_eq!(PathBuf::from(&shot.storyboard_path), expected_root);
+        assert_eq!(PathBuf::from(&shot.first_frame_path), expected_root);
+        assert_eq!(PathBuf::from(&shot.video_path), expected_root.join("Video"));
+        assert!(expected_root.join("Video").is_dir());
+        assert!(!expected_root.join("Storyboard").exists());
+        assert!(!expected_root.join("Primer frame").exists());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -81,7 +81,7 @@ export function App() {
         <span>SQLITE · WAL</span>
         <i />
         <span>ANÁLISIS SIN NUBE</span>
-        <b>Storyboard Wana 0.1.3</b>
+        <b>Storyboard Wana 0.1.6</b>
       </footer>
       {error && <ErrorToast message={error} onClose={clearError} />}
     </div>
