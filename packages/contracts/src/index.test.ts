@@ -32,5 +32,16 @@ describe("shared contracts", () => {
 
     expect(response.ok).toBe(true);
   });
-});
 
+  it("accepts copying a Markdown file through the native host", () => {
+    const request = NativeRequestSchema.parse({
+      protocolVersion: 1,
+      type: "clipboard.file",
+      requestId: "clipboard-1",
+      filename: "FrameSync-reglas.md",
+      content: "# Reglas",
+    });
+
+    expect(request.type).toBe("clipboard.file");
+  });
+});

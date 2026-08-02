@@ -1,11 +1,13 @@
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{
-    ConnectOptions, Connection, SqliteConnection,
+    ConnectOptions, Connection, Row, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
 use std::{
-    env, fs, io,
+    env, fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -43,6 +45,160 @@ struct BrowserIntegrationStatus {
     manifest_path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaFolderImportResult {
+    discovered: usize,
+    imported: usize,
+    duplicates: usize,
+    assigned: usize,
+    unassigned: usize,
+    images: usize,
+    videos: usize,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceDocumentImportResult {
+    original_filename: String,
+    stored_path: String,
+    sha256: String,
+    byte_size: u64,
+    mime_type: String,
+    page_count: Option<usize>,
+    text: String,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShotMediaImportResult {
+    imported: usize,
+    duplicates: usize,
+    assigned: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectWorkspaceResult {
+    root_path: String,
+    sources_path: String,
+    storyboards_path: String,
+    first_frames_path: String,
+    videos_path: String,
+    exports_path: String,
+}
+
+fn safe_folder_component(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, ' ' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        "Sin titulo".to_owned()
+    } else {
+        cleaned.chars().take(80).collect()
+    }
+}
+
+fn ensure_project_workspace(
+    app: &AppHandle,
+    project_number: i64,
+    project_name: &str,
+) -> Result<ProjectWorkspaceResult, String> {
+    if project_number <= 0 {
+        return Err("El numero de proyecto no es valido.".to_owned());
+    }
+    let documents = app
+        .path()
+        .document_dir()
+        .map_err(|error| format!("No se encontro la carpeta Documentos: {error}"))?;
+    let general_root = documents.join("Storyboard Wana");
+    fs::create_dir_all(&general_root)
+        .map_err(|error| format!("No se pudo crear {}: {error}", general_root.display()))?;
+    let prefix = format!("Proyecto {project_number:03} - ");
+    let desired_root =
+        general_root.join(format!("{prefix}{}", safe_folder_component(project_name)));
+    if !desired_root.exists()
+        && let Ok(entries) = fs::read_dir(&general_root)
+    {
+        let previous = entries.flatten().map(|entry| entry.path()).find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        });
+        if let Some(previous) = previous
+            && previous != desired_root
+        {
+            fs::rename(&previous, &desired_root).map_err(|error| {
+                format!(
+                    "No se pudo actualizar el nombre de la carpeta {}: {error}",
+                    previous.display()
+                )
+            })?;
+        }
+    }
+    let sources = desired_root.join("Fuentes");
+    let storyboards = desired_root.join("Storyboards");
+    let first_frames = desired_root.join("Primeros frames");
+    let videos = desired_root.join("Videos");
+    let exports = desired_root.join("Exportaciones");
+    for path in [
+        &desired_root,
+        &sources,
+        &storyboards,
+        &first_frames,
+        &videos,
+        &exports,
+    ] {
+        fs::create_dir_all(path)
+            .map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
+    }
+    Ok(ProjectWorkspaceResult {
+        root_path: desired_root.to_string_lossy().to_string(),
+        sources_path: sources.to_string_lossy().to_string(),
+        storyboards_path: storyboards.to_string_lossy().to_string(),
+        first_frames_path: first_frames.to_string_lossy().to_string(),
+        videos_path: videos.to_string_lossy().to_string(),
+        exports_path: exports.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn prepare_project_workspace(
+    app: AppHandle,
+    project_number: i64,
+    project_name: String,
+) -> Result<ProjectWorkspaceResult, String> {
+    ensure_project_workspace(&app, project_number, &project_name)
+}
+
+#[tauri::command]
+fn open_project_workspace(
+    app: AppHandle,
+    project_number: i64,
+    project_name: String,
+) -> Result<(), String> {
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    Command::new("explorer.exe")
+        .arg(&workspace.root_path)
+        .spawn()
+        .map_err(|error| format!("No se pudo abrir la carpeta del proyecto: {error}"))?;
+    Ok(())
+}
+
 fn validate_id(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
@@ -68,7 +224,7 @@ async fn delete_capture_source(
 ) -> Result<(), String> {
     let database_path = app
         .path()
-        .app_data_dir()
+        .app_config_dir()
         .map_err(|error| format!("No se encontró la carpeta de datos: {error}"))?
         .join("framesync.db");
     delete_capture_source_in_database(
@@ -346,6 +502,1027 @@ async fn delete_capture_source_in_database(
     transaction.commit().await.map_err(database_error)
 }
 
+#[tauri::command]
+async fn delete_shot(app: AppHandle, project_id: String, shot_id: String) -> Result<Value, String> {
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontró la carpeta de datos: {error}"))?
+        .join("framesync.db");
+    delete_shot_in_database(database_path, project_id, shot_id).await?;
+    refresh_workspace_context(app).await
+}
+
+async fn delete_shot_in_database(
+    database_path: PathBuf,
+    project_id: String,
+    shot_id: String,
+) -> Result<(), String> {
+    validate_id(&project_id)?;
+    validate_id(&shot_id)?;
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let shot = sqlx::query(
+        "SELECT shot_type, global_number
+         FROM shots
+         WHERE id = ? AND project_id = ?
+         LIMIT 1",
+    )
+    .bind(&shot_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?
+    .ok_or("El plano ya no existe dentro de este proyecto.")?;
+    let shot_type = shot
+        .try_get::<String, _>("shot_type")
+        .map_err(database_error)?;
+    let global_number = shot
+        .try_get::<Option<i64>, _>("global_number")
+        .map_err(database_error)?;
+
+    let mut transaction = connection.begin().await.map_err(database_error)?;
+    sqlx::query("DELETE FROM shots WHERE project_id = ? AND variant_of_shot_id = ?")
+        .bind(&project_id)
+        .bind(&shot_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("DELETE FROM shots WHERE id = ? AND project_id = ?")
+        .bind(&shot_id)
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+
+    if shot_type == "normal"
+        && let Some(deleted_number) = global_number
+    {
+        sqlx::query(
+            "UPDATE shots
+             SET global_number = -global_number,
+                 code = '__SHIFT__' || id
+             WHERE project_id = ?
+               AND shot_type = 'normal'
+               AND global_number > ?",
+        )
+        .bind(&project_id)
+        .bind(deleted_number)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE shots
+             SET global_number = (-global_number) - 1,
+                 code = 'P' || printf('%03d', (-global_number) - 1),
+                 order_index = MAX(0, (-global_number) - 2),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE project_id = ?
+               AND shot_type = 'normal'
+               AND global_number < 0",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE shots AS variant
+             SET code = 'P' || printf(
+               '%03d',
+               (SELECT parent.global_number
+                  FROM shots parent
+                 WHERE parent.id = variant.variant_of_shot_id)
+             ) || SUBSTR(variant.code, 5),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE variant.project_id = ?
+               AND variant.shot_type = 'variant'
+               AND variant.variant_of_shot_id IS NOT NULL",
+        )
+        .bind(&project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE assets
+             SET related_shot_code = 'P' || printf(
+               '%03d',
+               CAST(SUBSTR(related_shot_code, 2) AS INTEGER) - 1
+             )
+             WHERE project_id = ?
+               AND related_shot_code GLOB 'P[0-9][0-9][0-9]*'
+               AND CAST(SUBSTR(related_shot_code, 2) AS INTEGER) > ?",
+        )
+        .bind(&project_id)
+        .bind(deleted_number)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    sqlx::query(
+        "UPDATE projects
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(&project_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(())
+}
+
+fn collect_media_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("No se pudo leer {}: {error}", directory.display()))?
+        {
+            let path = entry
+                .map_err(|error| format!("No se pudo leer una entrada: {error}"))?
+                .path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if media_kind_and_mime(&path).is_some() {
+                files.push(path);
+            }
+        }
+    }
+    files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    Ok(files)
+}
+
+fn media_kind_and_mime(path: &Path) -> Option<(&'static str, &'static str)> {
+    match path
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some(("image", "image/png")),
+        "jpg" | "jpeg" => Some(("image", "image/jpeg")),
+        "webp" => Some(("image", "image/webp")),
+        "gif" => Some(("image", "image/gif")),
+        "avif" => Some(("image", "image/avif")),
+        "mp4" => Some(("video", "video/mp4")),
+        "webm" => Some(("video", "video/webm")),
+        "mov" => Some(("video", "video/quicktime")),
+        "m4v" => Some(("video", "video/x-m4v")),
+        _ => None,
+    }
+}
+
+fn source_document_mime(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pdf" => Some("application/pdf"),
+        "txt" => Some("text/plain"),
+        "md" => Some("text/markdown"),
+        "csv" => Some("text/csv"),
+        "json" => Some("application/json"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn import_source_documents(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    file_paths: Vec<String>,
+) -> Result<Vec<SourceDocumentImportResult>, String> {
+    validate_id(&project_id)?;
+    if file_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let destination_root =
+        PathBuf::from(ensure_project_workspace(&app, project_number, &project_name)?.sources_path);
+    fs::create_dir_all(&destination_root).map_err(|error| {
+        format!(
+            "No se pudo preparar {}: {error}",
+            destination_root.display()
+        )
+    })?;
+
+    let mut results = Vec::new();
+    for file_path in file_paths {
+        let source_path = PathBuf::from(&file_path);
+        if !source_path.is_file() {
+            return Err(format!(
+                "El archivo ya no existe: {}",
+                source_path.display()
+            ));
+        }
+        let Some(mime_type) = source_document_mime(&source_path) else {
+            return Err(format!(
+                "Formato no compatible: {}. Usa PDF, TXT, MD, CSV o JSON.",
+                source_path.display()
+            ));
+        };
+        let bytes = fs::read(&source_path)
+            .map_err(|error| format!("No se pudo leer {}: {error}", source_path.display()))?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let original_filename = source_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let safe_filename = original_filename
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let destination_path =
+            destination_root.join(format!("{}_{}", &sha256[..12], safe_filename));
+        if !destination_path.exists() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "No se pudo copiar {} a FrameSync: {error}",
+                    source_path.display()
+                )
+            })?;
+        }
+
+        let (text, page_count, warning) = if mime_type == "application/pdf" {
+            match pdf_extract::extract_text_by_pages(&source_path) {
+                Ok(pages) => {
+                    let text = pages
+                        .iter()
+                        .enumerate()
+                        .map(|(index, page)| {
+                            format!("--- PAGINA {} ---\n{}", index + 1, page.trim())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let warning = text.trim().is_empty().then(|| {
+                        "El PDF no contiene texto extraible. Puede ser un escaneo; el original se guardo igualmente.".to_owned()
+                    });
+                    (text, Some(pages.len()), warning)
+                }
+                Err(error) => (
+                    String::new(),
+                    None,
+                    Some(format!(
+                        "El PDF se guardo, pero no se pudo extraer el texto: {error}"
+                    )),
+                ),
+            }
+        } else {
+            (String::from_utf8_lossy(&bytes).into_owned(), None, None)
+        };
+        results.push(SourceDocumentImportResult {
+            original_filename,
+            stored_path: destination_path.to_string_lossy().to_string(),
+            sha256,
+            byte_size: bytes.len() as u64,
+            mime_type: mime_type.to_owned(),
+            page_count,
+            text,
+            warning,
+        });
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+fn rescan_source_document(file_path: String) -> Result<SourceDocumentImportResult, String> {
+    let source_path = PathBuf::from(&file_path);
+    if !source_path.is_file() {
+        return Err(format!(
+            "El archivo ya no existe: {}",
+            source_path.display()
+        ));
+    }
+    let Some(mime_type) = source_document_mime(&source_path) else {
+        return Err(format!(
+            "Formato no compatible: {}. Usa PDF, TXT, MD, CSV o JSON.",
+            source_path.display()
+        ));
+    };
+    let bytes = fs::read(&source_path)
+        .map_err(|error| format!("No se pudo leer {}: {error}", source_path.display()))?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let original_filename = source_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (text, page_count, warning) = if mime_type == "application/pdf" {
+        match pdf_extract::extract_text_by_pages(&source_path) {
+            Ok(pages) => {
+                let text = pages
+                    .iter()
+                    .enumerate()
+                    .map(|(index, page)| format!("--- PAGINA {} ---\n{}", index + 1, page.trim()))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let warning = text.trim().is_empty().then(|| {
+                    "El PDF no contiene texto extraible. Puede ser un escaneo.".to_owned()
+                });
+                (text, Some(pages.len()), warning)
+            }
+            Err(error) => (
+                String::new(),
+                None,
+                Some(format!("No se pudo volver a extraer el texto: {error}")),
+            ),
+        }
+    } else {
+        (String::from_utf8_lossy(&bytes).into_owned(), None, None)
+    };
+
+    Ok(SourceDocumentImportResult {
+        original_filename,
+        stored_path: source_path.to_string_lossy().to_string(),
+        sha256,
+        byte_size: bytes.len() as u64,
+        mime_type: mime_type.to_owned(),
+        page_count,
+        text,
+        warning,
+    })
+}
+
+fn shot_code_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_string_lossy().to_ascii_uppercase();
+    let tokens = stem
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        let number = if matches!(*token, "PLANO" | "SHOT" | "SH") {
+            tokens.get(index + 1).copied().filter(|value| {
+                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        } else if let Some(value) = token.strip_prefix('P') {
+            (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())).then_some(value)
+        } else {
+            None
+        };
+        if let Some(number) = number.and_then(|value| value.parse::<u32>().ok())
+            && number > 0
+        {
+            return Some(format!("P{number:03}"));
+        }
+    }
+    None
+}
+
+fn media_role(path: &Path, kind: &str) -> &'static str {
+    if kind == "video" {
+        return "video_final";
+    }
+    let parent = path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_string_lossy()
+        .to_ascii_uppercase();
+    if parent.contains("STORYBOARDS") {
+        return "storyboard";
+    }
+    if parent.contains("PRIMEROS FRAMES") || parent.contains("FIRST FRAMES") {
+        return "first_frame";
+    }
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_uppercase();
+    if stem.contains("PRIMER_FRAME") || stem.contains("FIRST_FRAME") {
+        "first_frame"
+    } else if stem.contains("ULTIMO_FRAME") || stem.contains("LAST_FRAME") {
+        "last_frame"
+    } else if stem.contains("STORYBOARD") {
+        "storyboard"
+    } else {
+        "reference"
+    }
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("No se pudo abrir {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("No se pudo leer {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[tauri::command]
+async fn import_media_folder(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    folder_path: String,
+) -> Result<MediaFolderImportResult, String> {
+    validate_id(&project_id)?;
+    let source_root = PathBuf::from(folder_path);
+    if !source_root.is_dir() {
+        return Err("La carpeta elegida ya no existe o no es accesible.".to_owned());
+    }
+    let files = collect_media_files(&source_root)?;
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    let destination_root = PathBuf::from(&workspace.root_path);
+    fs::create_dir_all(&destination_root).map_err(|error| {
+        format!(
+            "No se pudo preparar {}: {error}",
+            destination_root.display()
+        )
+    })?;
+
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontró la carpeta de datos: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let project_exists =
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM projects WHERE id = ? LIMIT 1")
+            .bind(&project_id)
+            .fetch_optional(&mut connection)
+            .await
+            .map_err(database_error)?;
+    if project_exists.is_none() {
+        return Err("El proyecto de destino ya no existe.".to_owned());
+    }
+
+    let mut result = MediaFolderImportResult {
+        discovered: files.len(),
+        imported: 0,
+        duplicates: 0,
+        assigned: 0,
+        unassigned: 0,
+        images: 0,
+        videos: 0,
+        warnings: Vec::new(),
+    };
+    let mut transaction = connection.begin().await.map_err(database_error)?;
+    for source_path in files {
+        let Some((kind, mime_type)) = media_kind_and_mime(&source_path) else {
+            continue;
+        };
+        if kind == "video" {
+            result.videos += 1;
+        } else {
+            result.images += 1;
+        }
+        let sha256 = file_sha256(&source_path)?;
+        let original_filename = source_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let role = media_role(&source_path, kind);
+        let safe_filename = original_filename
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let role_root = match role {
+            "storyboard" => PathBuf::from(&workspace.storyboards_path),
+            "first_frame" | "last_frame" => PathBuf::from(&workspace.first_frames_path),
+            "video_final" => PathBuf::from(&workspace.videos_path),
+            _ => destination_root.clone(),
+        };
+        let destination_path = if source_path.starts_with(&destination_root) {
+            source_path.clone()
+        } else {
+            role_root.join(safe_filename)
+        };
+        let existing_asset =
+            sqlx::query_scalar::<_, String>("SELECT id FROM assets WHERE sha256 = ? LIMIT 1")
+                .bind(&sha256)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+        let asset_id = if let Some(asset_id) = existing_asset {
+            result.duplicates += 1;
+            asset_id
+        } else {
+            if source_path != destination_path {
+                fs::copy(&source_path, &destination_path).map_err(|error| {
+                    format!(
+                        "No se pudo copiar {} a Storyboard Wana: {error}",
+                        source_path.display()
+                    )
+                })?;
+            }
+            let asset_id = format!("local-{}", &sha256[..24]);
+            let related_shot_code = shot_code_from_filename(&source_path);
+            let byte_size = fs::metadata(&destination_path)
+                .map_err(|error| format!("No se pudo medir el archivo copiado: {error}"))?
+                .len() as i64;
+            sqlx::query(
+                "INSERT INTO assets (
+                   id, project_id, capture_source_id, kind, role,
+                   original_filename, stored_path, local_path,
+                   related_shot_code, source_url, mime_type, byte_size,
+                   width, height, duration_ms, sha256, quality_source, created_at
+                 ) VALUES (
+                   ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?,
+                   NULL, NULL, NULL, ?, 'local_file',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+            )
+            .bind(&asset_id)
+            .bind(&project_id)
+            .bind(kind)
+            .bind(role)
+            .bind(&original_filename)
+            .bind(destination_path.to_string_lossy().to_string())
+            .bind(destination_path.to_string_lossy().to_string())
+            .bind(&related_shot_code)
+            .bind(mime_type)
+            .bind(byte_size)
+            .bind(&sha256)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            result.imported += 1;
+            asset_id
+        };
+
+        let shot_code = shot_code_from_filename(&source_path);
+        let shot_id = if let Some(code) = &shot_code {
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM shots WHERE project_id = ? AND code = ? LIMIT 1",
+            )
+            .bind(&project_id)
+            .bind(code)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        } else {
+            None
+        };
+        if let Some(shot_id) = shot_id {
+            let is_detached = sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM detached_shot_assets
+                  WHERE shot_id = ? AND asset_id = ? AND role = ? LIMIT 1",
+            )
+            .bind(&shot_id)
+            .bind(&asset_id)
+            .bind(role)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .is_some();
+            if is_detached {
+                continue;
+            }
+            let next_order = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MAX(order_index), -1) + 1
+                   FROM shot_assets
+                  WHERE shot_id = ? AND role = ?",
+            )
+            .bind(&shot_id)
+            .bind(role)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            let inserted = sqlx::query(
+                "INSERT OR IGNORE INTO shot_assets
+                   (shot_id, asset_id, role, order_index)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(&shot_id)
+            .bind(&asset_id)
+            .bind(role)
+            .bind(next_order)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .rows_affected();
+            if inserted > 0 {
+                result.assigned += 1;
+            }
+        } else {
+            result.unassigned += 1;
+            if let Some(code) = shot_code {
+                result.warnings.push(format!(
+                    "{original_filename}: no existe el plano {code} en el proyecto."
+                ));
+            } else {
+                result.warnings.push(format!(
+                    "{original_filename}: el nombre no contiene un código como P001."
+                ));
+            }
+        }
+    }
+    sqlx::query(
+        "UPDATE shots
+         SET status = CASE
+           WHEN EXISTS (
+             SELECT 1 FROM shot_assets link
+              WHERE link.shot_id = shots.id AND link.role = 'video_final'
+           ) THEN 'video'
+           WHEN EXISTS (
+             SELECT 1 FROM shot_assets link
+              WHERE link.shot_id = shots.id AND link.role = 'first_frame'
+           ) THEN 'first_frame'
+           ELSE status
+         END,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE project_id = ?",
+    )
+    .bind(&project_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE projects
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(&project_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    let _ = refresh_workspace_context(app).await?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn sync_project_workspace(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+) -> Result<MediaFolderImportResult, String> {
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    migrate_project_assets(&app, &project_id, &workspace).await?;
+    import_media_folder(
+        app,
+        project_id,
+        project_number,
+        project_name,
+        workspace.root_path,
+    )
+    .await
+}
+
+async fn migrate_project_assets(
+    app: &AppHandle,
+    project_id: &str,
+    workspace: &ProjectWorkspaceResult,
+) -> Result<(), String> {
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontro la base local: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let rows = sqlx::query(
+        "SELECT asset.id, asset.local_path, asset.kind, asset.role AS asset_role,
+                asset.original_filename, asset.sha256,
+                link.role AS link_role, link.order_index, shot.code AS shot_code
+         FROM assets asset
+         LEFT JOIN shot_assets link ON link.asset_id = asset.id
+         LEFT JOIN shots shot ON shot.id = link.shot_id
+         WHERE asset.project_id = ? AND asset.local_path IS NOT NULL",
+    )
+    .bind(project_id)
+    .fetch_all(&mut connection)
+    .await
+    .map_err(database_error)?;
+    let workspace_root = PathBuf::from(&workspace.root_path);
+    for row in rows {
+        let asset_id = row.try_get::<String, _>("id").map_err(database_error)?;
+        let local_path = row
+            .try_get::<String, _>("local_path")
+            .map_err(database_error)?;
+        let source = PathBuf::from(&local_path);
+        if source.starts_with(&workspace_root) || !source.is_file() {
+            continue;
+        }
+        let role = row
+            .try_get::<Option<String>, _>("link_role")
+            .map_err(database_error)?
+            .unwrap_or(
+                row.try_get::<String, _>("asset_role")
+                    .map_err(database_error)?,
+            );
+        let kind = row.try_get::<String, _>("kind").map_err(database_error)?;
+        let shot_code = row
+            .try_get::<Option<String>, _>("shot_code")
+            .map_err(database_error)?;
+        let order = row
+            .try_get::<Option<i64>, _>("order_index")
+            .map_err(database_error)?
+            .unwrap_or(0);
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("bin")
+            .to_ascii_lowercase();
+        let original = row
+            .try_get::<Option<String>, _>("original_filename")
+            .map_err(database_error)?
+            .unwrap_or_else(|| format!("archivo.{extension}"));
+        let sha256 = row.try_get::<String, _>("sha256").map_err(database_error)?;
+        let (directory, filename) = if kind == "document" {
+            (PathBuf::from(&workspace.sources_path), original.clone())
+        } else {
+            match (role.as_str(), shot_code.as_deref()) {
+                ("storyboard", Some(code)) => (
+                    PathBuf::from(&workspace.storyboards_path),
+                    format!("{code}_storyboard_{:02}.{extension}", order + 1),
+                ),
+                ("first_frame", Some(code)) => (
+                    PathBuf::from(&workspace.first_frames_path),
+                    format!("{code}_primer_frame.{extension}"),
+                ),
+                ("video_final", Some(code)) => (
+                    PathBuf::from(&workspace.videos_path),
+                    format!("{code}_video_v{:02}.{extension}", order + 1),
+                ),
+                _ => (
+                    workspace_root.clone(),
+                    format!("{}_{}", &sha256[..12], safe_folder_component(&original)),
+                ),
+            }
+        };
+        let destination = directory.join(filename);
+        if !destination.exists() {
+            fs::copy(&source, &destination)
+                .map_err(|error| format!("No se pudo migrar {}: {error}", source.display()))?;
+        }
+        sqlx::query("UPDATE assets SET stored_path = ?, local_path = ? WHERE id = ?")
+            .bind(destination.to_string_lossy().to_string())
+            .bind(destination.to_string_lossy().to_string())
+            .bind(asset_id)
+            .execute(&mut connection)
+            .await
+            .map_err(database_error)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn import_shot_media(
+    app: AppHandle,
+    project_id: String,
+    project_number: i64,
+    project_name: String,
+    shot_id: String,
+    file_paths: Vec<String>,
+    role: String,
+    replace_existing: bool,
+) -> Result<ShotMediaImportResult, String> {
+    validate_id(&project_id)?;
+    validate_id(&shot_id)?;
+    if !matches!(role.as_str(), "storyboard" | "first_frame" | "video_final") {
+        return Err("El tipo de imagen no es compatible.".to_owned());
+    }
+    if file_paths.is_empty() {
+        return Ok(ShotMediaImportResult {
+            imported: 0,
+            duplicates: 0,
+            assigned: 0,
+        });
+    }
+    let workspace = ensure_project_workspace(&app, project_number, &project_name)?;
+    let destination_root = match role.as_str() {
+        "storyboard" => PathBuf::from(&workspace.storyboards_path),
+        "video_final" => PathBuf::from(&workspace.videos_path),
+        _ => PathBuf::from(&workspace.first_frames_path),
+    };
+    fs::create_dir_all(&destination_root).map_err(|error| {
+        format!(
+            "No se pudo preparar {}: {error}",
+            destination_root.display()
+        )
+    })?;
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontro la base local: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let shot_code = sqlx::query_scalar::<_, String>(
+        "SELECT code FROM shots WHERE id = ? AND project_id = ? LIMIT 1",
+    )
+    .bind(&shot_id)
+    .bind(&project_id)
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(database_error)?;
+    let Some(shot_code) = shot_code else {
+        return Err("El plano ya no existe en este proyecto.".to_owned());
+    };
+    let mut transaction = connection.begin().await.map_err(database_error)?;
+    if replace_existing {
+        sqlx::query(
+            "INSERT OR IGNORE INTO detached_shot_assets (shot_id, asset_id, role)
+             SELECT shot_id, asset_id, role FROM shot_assets
+              WHERE shot_id = ? AND role = ?",
+        )
+        .bind(&shot_id)
+        .bind(&role)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query("DELETE FROM shot_assets WHERE shot_id = ? AND role = ?")
+            .bind(&shot_id)
+            .bind(&role)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+    }
+    let mut result = ShotMediaImportResult {
+        imported: 0,
+        duplicates: 0,
+        assigned: 0,
+    };
+    for file_path in file_paths {
+        let source_path = PathBuf::from(&file_path);
+        let Some((kind, mime_type)) = media_kind_and_mime(&source_path) else {
+            return Err(format!(
+                "{} no es una imagen compatible.",
+                source_path.display()
+            ));
+        };
+        if role == "video_final" && kind != "video" {
+            return Err("La casilla de video solo acepta archivos de video.".to_owned());
+        }
+        if role != "video_final" && kind != "image" {
+            return Err("Storyboard y primer frame solo aceptan imagenes.".to_owned());
+        }
+        let sha256 = file_sha256(&source_path)?;
+        let original_filename = source_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let next_order = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(MAX(order_index), -1) + 1 FROM shot_assets WHERE shot_id = ? AND role = ?",
+        )
+        .bind(&shot_id)
+        .bind(&role)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let extension = source_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let destination_path = destination_root.join(match role.as_str() {
+            "storyboard" => format!("{shot_code}_storyboard_{:02}.{extension}", next_order + 1),
+            "video_final" => format!("{shot_code}_video_v{:02}.{extension}", next_order + 1),
+            _ => format!("{shot_code}_primer_frame.{extension}"),
+        });
+        let existing_asset =
+            sqlx::query_scalar::<_, String>("SELECT id FROM assets WHERE sha256 = ? LIMIT 1")
+                .bind(&sha256)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+        let asset_id = if let Some(asset_id) = existing_asset {
+            result.duplicates += 1;
+            asset_id
+        } else {
+            if source_path != destination_path {
+                fs::copy(&source_path, &destination_path).map_err(|error| {
+                    format!(
+                        "No se pudo copiar {} a Storyboard Wana: {error}",
+                        source_path.display()
+                    )
+                })?;
+            }
+            let asset_id = format!("local-{}", &sha256[..24]);
+            let byte_size = fs::metadata(&destination_path)
+                .map_err(|error| format!("No se pudo medir la imagen: {error}"))?
+                .len() as i64;
+            sqlx::query(
+                "INSERT INTO assets (
+                   id, project_id, capture_source_id, kind, role,
+                   original_filename, stored_path, local_path,
+                   related_shot_code, source_url, mime_type, byte_size,
+                   width, height, duration_ms, sha256, quality_source, created_at
+                 ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?,
+                   NULL, NULL, NULL, ?, 'local_file', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            )
+            .bind(&asset_id)
+            .bind(&project_id)
+            .bind(kind)
+            .bind(&role)
+            .bind(&original_filename)
+            .bind(destination_path.to_string_lossy().to_string())
+            .bind(destination_path.to_string_lossy().to_string())
+            .bind(&shot_code)
+            .bind(mime_type)
+            .bind(byte_size)
+            .bind(&sha256)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            result.imported += 1;
+            asset_id
+        };
+        sqlx::query(
+            "DELETE FROM detached_shot_assets
+              WHERE shot_id = ? AND asset_id = ? AND role = ?",
+        )
+        .bind(&shot_id)
+        .bind(&asset_id)
+        .bind(&role)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO shot_assets (shot_id, asset_id, role, order_index) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&shot_id)
+        .bind(&asset_id)
+        .bind(&role)
+        .bind(next_order)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        result.assigned += inserted as usize;
+    }
+    sqlx::query(
+        "UPDATE shots SET status = CASE
+           WHEN ? = 'video_final' THEN 'video'
+           WHEN ? = 'first_frame' THEN 'first_frame'
+           WHEN status IN ('empty', 'structured', 'incomplete') THEN 'storyboard'
+           ELSE status END,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    )
+    .bind(&role)
+    .bind(&role)
+    .bind(&shot_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    let _ = refresh_workspace_context(app).await?;
+    Ok(result)
+}
+
 fn inbox_root() -> Result<PathBuf, String> {
     let local_app_data = env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA no está configurado.")?;
     Ok(PathBuf::from(local_app_data)
@@ -360,6 +1537,170 @@ fn local_framesync_root() -> Result<PathBuf, String> {
 
 fn workspace_context_path() -> Result<PathBuf, String> {
     Ok(local_framesync_root()?.join("workspace-context.json"))
+}
+
+#[tauri::command]
+async fn refresh_workspace_context(app: AppHandle) -> Result<Value, String> {
+    let database_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("No se encontró la carpeta de datos: {error}"))?
+        .join("framesync.db");
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(false)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .disable_statement_logging();
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(database_error)?;
+    let rows = sqlx::query(
+        "SELECT
+           project.id,
+           project.project_number,
+           project.name,
+           project.description,
+           project.updated_at,
+           (SELECT COUNT(*) FROM capture_sources source
+             WHERE source.project_id = project.id) AS source_count,
+           (SELECT COUNT(*) FROM episodes episode
+             WHERE episode.project_id = project.id) AS episode_count,
+           (SELECT COUNT(*) FROM scenes scene
+             WHERE scene.project_id = project.id) AS scene_count,
+           (SELECT COUNT(*) FROM shots shot
+             WHERE shot.project_id = project.id
+               AND shot.shot_type = 'normal') AS shot_count,
+           (SELECT COUNT(*) FROM shots shot
+             WHERE shot.project_id = project.id
+               AND shot.shot_type = 'special') AS special_shot_count,
+           (SELECT COUNT(*)
+              FROM analysis_runs run
+              JOIN capture_sources source ON source.id = run.capture_source_id
+              JOIN json_each(run.proposal_json, '$.shots') item
+             WHERE source.project_id = project.id
+               AND json_extract(item.value, '$.reviewStatus') <> 'rejected'
+               AND run.id = (
+                 SELECT latest.id
+                   FROM analysis_runs latest
+                  WHERE latest.capture_source_id = source.id
+                  ORDER BY latest.started_at DESC
+                  LIMIT 1
+               )) AS detected_shot_count,
+           (SELECT COUNT(*)
+              FROM analysis_runs run
+              JOIN capture_sources source ON source.id = run.capture_source_id
+              JOIN json_each(run.proposal_json, '$.shots') item
+             WHERE source.project_id = project.id
+               AND json_extract(item.value, '$.reviewStatus') <> 'rejected'
+               AND run.id = (
+                 SELECT latest.id
+                   FROM analysis_runs latest
+                  WHERE latest.capture_source_id = source.id
+                  ORDER BY latest.started_at DESC
+                  LIMIT 1
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM shot_import_events event
+                  WHERE event.project_id = project.id
+                    AND event.detected_item_id =
+                        json_extract(item.value, '$.id')
+               )) AS pending_shot_count,
+           (SELECT COUNT(*) FROM assets asset
+             WHERE asset.project_id = project.id
+               AND asset.kind = 'image') AS image_count,
+           (SELECT COUNT(*) FROM assets asset
+             WHERE asset.project_id = project.id
+               AND asset.kind = 'video') AS video_count,
+           (SELECT COUNT(*) FROM assets asset
+             WHERE asset.project_id = project.id
+               AND asset.kind = 'image'
+               AND NOT EXISTS (
+                 SELECT 1 FROM shot_assets link WHERE link.asset_id = asset.id
+               )) AS unassigned_image_count,
+           (SELECT COUNT(*) FROM assets asset
+             WHERE asset.project_id = project.id
+               AND asset.kind = 'video'
+               AND NOT EXISTS (
+                 SELECT 1 FROM shot_assets link WHERE link.asset_id = asset.id
+               )) AS unassigned_video_count,
+           (SELECT COUNT(*) FROM shots shot
+             WHERE shot.project_id = project.id
+               AND EXISTS (
+                 SELECT 1 FROM shot_assets link
+                  WHERE link.shot_id = shot.id
+                    AND link.role = 'first_frame'
+               )) AS shots_with_first_frame_count,
+           (SELECT COUNT(*) FROM shots shot
+             WHERE shot.project_id = project.id
+               AND EXISTS (
+                 SELECT 1 FROM shot_assets link
+                  WHERE link.shot_id = shot.id
+                    AND link.role = 'video_final'
+               )) AS shots_with_video_count,
+           (SELECT COUNT(*)
+              FROM shot_assets link
+              JOIN shots shot ON shot.id = link.shot_id
+             WHERE shot.project_id = project.id
+               AND link.role = 'video_final') AS video_variant_count,
+           (SELECT MAX(episode.number) FROM episodes episode
+             WHERE episode.project_id = project.id) AS last_episode_number,
+           (SELECT MAX(scene.number) FROM scenes scene
+             WHERE scene.project_id = project.id) AS last_scene_number,
+           (SELECT MAX(shot.global_number) FROM shots shot
+             WHERE shot.project_id = project.id
+               AND shot.shot_type = 'normal') AS last_shot_number
+         FROM projects project
+         ORDER BY project.updated_at DESC",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .map_err(database_error)?;
+    let generated_at =
+        sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+            .fetch_one(&mut connection)
+            .await
+            .map_err(database_error)?;
+    let mut projects = Vec::with_capacity(rows.len());
+    for row in rows {
+        let last_shot_number = row
+            .try_get::<Option<i64>, _>("last_shot_number")
+            .map_err(database_error)?
+            .unwrap_or(0);
+        projects.push(json!({
+            "id": row.try_get::<String, _>("id").map_err(database_error)?,
+            "projectNumber": row.try_get::<i64, _>("project_number").map_err(database_error)?,
+            "name": row.try_get::<String, _>("name").map_err(database_error)?,
+            "description": row.try_get::<Option<String>, _>("description").map_err(database_error)?,
+            "sourceCount": row.try_get::<i64, _>("source_count").map_err(database_error)?,
+            "episodeCount": row.try_get::<i64, _>("episode_count").map_err(database_error)?,
+            "sceneCount": row.try_get::<i64, _>("scene_count").map_err(database_error)?,
+            "shotCount": row.try_get::<i64, _>("shot_count").map_err(database_error)?,
+            "specialShotCount": row.try_get::<i64, _>("special_shot_count").map_err(database_error)?,
+            "detectedShotCount": row.try_get::<i64, _>("detected_shot_count").map_err(database_error)?,
+            "pendingShotCount": row.try_get::<i64, _>("pending_shot_count").map_err(database_error)?,
+            "imageCount": row.try_get::<i64, _>("image_count").map_err(database_error)?,
+            "videoCount": row.try_get::<i64, _>("video_count").map_err(database_error)?,
+            "unassignedImageCount": row.try_get::<i64, _>("unassigned_image_count").map_err(database_error)?,
+            "unassignedVideoCount": row.try_get::<i64, _>("unassigned_video_count").map_err(database_error)?,
+            "shotsWithFirstFrameCount": row.try_get::<i64, _>("shots_with_first_frame_count").map_err(database_error)?,
+            "shotsWithVideoCount": row.try_get::<i64, _>("shots_with_video_count").map_err(database_error)?,
+            "videoVariantCount": row.try_get::<i64, _>("video_variant_count").map_err(database_error)?,
+            "lastEpisodeNumber": row.try_get::<Option<i64>, _>("last_episode_number").map_err(database_error)?,
+            "lastSceneNumber": row.try_get::<Option<i64>, _>("last_scene_number").map_err(database_error)?,
+            "lastShotNumber": last_shot_number,
+            "nextShotNumber": last_shot_number + 1,
+            "updatedAt": row.try_get::<String, _>("updated_at").map_err(database_error)?,
+        }));
+    }
+    let context = json!({
+        "protocolVersion": 1,
+        "generatedAt": generated_at,
+        "projects": projects,
+    });
+    write_workspace_context(context.clone())?;
+    Ok(context)
 }
 
 fn manifest_path() -> Result<PathBuf, String> {
@@ -883,10 +2224,23 @@ pub fn run() {
             sql: include_str!("../migrations/0003_project_numbers.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "detached_shot_assets",
+            sql: include_str!("../migrations/0004_detached_shot_assets.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "video_technical_details",
+            sql: include_str!("../migrations/0005_video_technical_details.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -905,21 +2259,82 @@ pub fn run() {
             read_inbox_capture,
             mark_inbox_capture_processed,
             write_workspace_context,
+            refresh_workspace_context,
+            prepare_project_workspace,
+            open_project_workspace,
+            import_source_documents,
+            rescan_source_document,
+            import_media_folder,
+            sync_project_workspace,
+            import_shot_media,
             get_browser_integration_status,
             prepare_browser_integration,
             delete_capture_source,
+            delete_shot,
             open_extension_folder,
             open_chrome_extensions,
             open_edge_extensions
         ])
         .run(tauri::generate_context!())
-        .expect("FrameSync desktop failed to start");
+        .expect("Storyboard Wana desktop failed to start");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn media_names_resolve_to_the_same_shot_across_video_variants() {
+        assert_eq!(
+            shot_code_from_filename(Path::new("P001_VIDEO_V01.mp4")).as_deref(),
+            Some("P001")
+        );
+        assert_eq!(
+            shot_code_from_filename(Path::new("P001_VIDEO_V03.mp4")).as_deref(),
+            Some("P001")
+        );
+        assert_eq!(
+            shot_code_from_filename(Path::new("PLANO_27_PRIMER_FRAME.png")).as_deref(),
+            Some("P027")
+        );
+        assert_eq!(shot_code_from_filename(Path::new("resultado.mp4")), None);
+    }
+
+    #[test]
+    fn media_roles_keep_first_frames_and_videos_separate() {
+        assert_eq!(
+            media_role(Path::new("P004_PRIMER_FRAME.png"), "image"),
+            "first_frame"
+        );
+        assert_eq!(
+            media_role(Path::new("P004_VIDEO_V02.mp4"), "video"),
+            "video_final"
+        );
+        assert_eq!(
+            media_role(
+                Path::new("C:/Documentos/Storyboard Wana/Proyecto/Storyboards/P004.png"),
+                "image"
+            ),
+            "storyboard"
+        );
+        assert_eq!(
+            media_role(
+                Path::new("C:/Documentos/Storyboard Wana/Proyecto/Primeros frames/P004.png"),
+                "image"
+            ),
+            "first_frame"
+        );
+    }
+
+    #[test]
+    fn project_folder_names_are_human_readable_and_safe() {
+        assert_eq!(
+            safe_folder_component("VIDEO: REMERAS / 2026"),
+            "VIDEO_ REMERAS _ 2026"
+        );
+        assert_eq!(safe_folder_component("   "), "Sin titulo");
+    }
 
     #[test]
     fn source_only_deletion_commits_on_one_native_connection() {
@@ -990,6 +2405,109 @@ mod tests {
                     .expect("count messages");
             assert_eq!(source_count, 0);
             assert_eq!(message_count, 0);
+            verification.close().await.expect("close test database");
+
+            let _ = fs::remove_file(&database_path);
+            let _ = fs::remove_file(database_path.with_extension("db-wal"));
+            let _ = fs::remove_file(database_path.with_extension("db-shm"));
+        });
+    }
+
+    #[test]
+    fn deleting_a_middle_shot_keeps_global_numbers_consecutive() {
+        tauri::async_runtime::block_on(async {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let database_path = env::temp_dir().join(format!(
+                "framesync-delete-shot-{}-{nonce}.db",
+                std::process::id()
+            ));
+            let options = SqliteConnectOptions::new()
+                .filename(&database_path)
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let mut connection = SqliteConnection::connect_with(&options)
+                .await
+                .expect("create test database");
+            sqlx::raw_sql(
+                "CREATE TABLE projects (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 CREATE TABLE shots (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   project_id TEXT NOT NULL,
+                   shot_type TEXT NOT NULL,
+                   global_number INTEGER,
+                   code TEXT,
+                   variant_of_shot_id TEXT,
+                   order_index INTEGER NOT NULL,
+                   updated_at TEXT NOT NULL,
+                   FOREIGN KEY (project_id) REFERENCES projects(id),
+                   FOREIGN KEY (variant_of_shot_id)
+                     REFERENCES shots(id) ON DELETE SET NULL
+                 );
+                 CREATE UNIQUE INDEX unique_normal_number
+                   ON shots(project_id, global_number)
+                   WHERE shot_type = 'normal' AND global_number IS NOT NULL;
+                 CREATE TABLE assets (
+                   id TEXT PRIMARY KEY NOT NULL,
+                   project_id TEXT,
+                   related_shot_code TEXT
+                 );
+                 INSERT INTO projects (id, updated_at)
+                   VALUES ('project-test', 'before');
+                 INSERT INTO shots (
+                   id, project_id, shot_type, global_number, code,
+                   variant_of_shot_id, order_index, updated_at
+                 ) VALUES
+                   ('shot-1', 'project-test', 'normal', 1, 'P001', NULL, 0, 'before'),
+                   ('shot-2', 'project-test', 'normal', 2, 'P002', NULL, 1, 'before'),
+                   ('shot-3', 'project-test', 'normal', 3, 'P003', NULL, 2, 'before'),
+                   ('variant-3', 'project-test', 'variant', NULL, 'P003-V001', 'shot-3', 3, 'before');
+                 INSERT INTO assets (id, project_id, related_shot_code)
+                   VALUES ('asset-3', 'project-test', 'P003');",
+            )
+            .execute(&mut connection)
+            .await
+            .expect("seed test database");
+            connection.close().await.expect("close seed connection");
+
+            delete_shot_in_database(
+                database_path.clone(),
+                "project-test".to_owned(),
+                "shot-2".to_owned(),
+            )
+            .await
+            .expect("delete and renumber shot");
+
+            let mut verification = SqliteConnection::connect_with(&options)
+                .await
+                .expect("reopen test database");
+            let shots = sqlx::query(
+                "SELECT id, global_number, code
+                 FROM shots
+                 ORDER BY CASE WHEN global_number IS NULL THEN 1 ELSE 0 END,
+                          global_number, code",
+            )
+            .fetch_all(&mut verification)
+            .await
+            .expect("read renumbered shots");
+            assert_eq!(shots.len(), 3);
+            assert_eq!(
+                shots[1].try_get::<Option<i64>, _>("global_number").unwrap(),
+                Some(2)
+            );
+            assert_eq!(shots[1].try_get::<String, _>("code").unwrap(), "P002");
+            assert_eq!(shots[2].try_get::<String, _>("code").unwrap(), "P002-V001");
+            let related_code =
+                sqlx::query_scalar::<_, String>("SELECT related_shot_code FROM assets")
+                    .fetch_one(&mut verification)
+                    .await
+                    .expect("read related shot code");
+            assert_eq!(related_code, "P002");
             verification.close().await.expect("close test database");
 
             let _ = fs::remove_file(&database_path);

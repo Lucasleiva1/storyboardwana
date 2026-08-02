@@ -4,7 +4,7 @@ import { App } from "./App";
 import "./styles.css";
 
 const root = document.getElementById("root");
-if (!root) throw new Error("FrameSync root element is missing.");
+if (!root) throw new Error("Storyboard Wana root element is missing.");
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>

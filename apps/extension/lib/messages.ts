@@ -19,6 +19,7 @@ export type SessionSnapshot = {
 export type BackgroundRequest =
   | { type: "host.ping" }
   | { type: "workspace.list" }
+  | { type: "rules.copyFile"; filename: string; content: string }
   | {
       type: "capture.page";
       mode: "full" | "loaded" | "selection";

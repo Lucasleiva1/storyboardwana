@@ -181,6 +181,21 @@ async function listWorkspace() {
   }
 }
 
+async function copyFileToWindowsClipboard(filename: string, content: string) {
+  const connection = nativeConnection();
+  try {
+    return await connection.send({
+      protocolVersion: 1,
+      type: "clipboard.file",
+      requestId: requestId("clipboard-file"),
+      filename,
+      content,
+    });
+  } finally {
+    connection.disconnect();
+  }
+}
+
 function chooseCandidateUrl(candidate: ImageCandidate) {
   const byWidth = [...candidate.srcsetCandidates].sort(
     (a, b) => (b.width ?? b.density ?? 0) - (a.width ?? a.density ?? 0),
@@ -234,7 +249,7 @@ async function prepareAsset(
       return null;
     }
   })();
-  const contextText = `${candidate.nearbyText ?? ""}\n${candidate.alt ?? ""}`;
+  const contextText = `${candidate.nearbyText ?? ""}\n${candidate.alt ?? ""}\n${filename ?? ""}\n${url}`;
   const shotMatch = contextText.match(
     /(?:(?:E|S)\d{1,3}\s*[-–—]\s*)?(?:P|PLANO|SH|SHOT)\s*[-:]?\s*(\d{1,4})/i,
   );
@@ -285,7 +300,7 @@ async function sendCapture(
   destinationProjectId: string,
   destinationProjectName: string,
 ) {
-  if (capture.messages.length === 0) {
+  if (capture.messages.length === 0 && capture.imageCandidates.length === 0) {
     throw new Error("La captura está vacía y no se enviará.");
   }
   const preparedResults = await Promise.allSettled(
@@ -426,6 +441,14 @@ export default defineBackground(() => {
               return { ok: true, native: await pingHost() };
             case "workspace.list":
               return { ok: true, workspace: await listWorkspace() };
+            case "rules.copyFile":
+              return {
+                ok: true,
+                native: await copyFileToWindowsClipboard(
+                  request.filename,
+                  request.content,
+                ),
+              };
             case "capture.page":
               return {
                 ok: true,

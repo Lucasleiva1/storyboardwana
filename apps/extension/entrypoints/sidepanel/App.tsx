@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { analyzeCapture } from "@framesync/analysis-engine";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  DetectedShot,
   WorkspaceContext,
   WorkspaceProjectSummary,
 } from "@framesync/contracts";
@@ -10,6 +12,22 @@ import type {
 } from "../../lib/messages";
 
 type Activity = "idle" | "capturing" | "sending" | "sent" | "error";
+
+function detectedShots(capture: CaptureDraft) {
+  return analyzeCapture({ ...capture, selectedShotIds: null }).shots;
+}
+
+function isAlreadyStored(
+  shot: DetectedShot,
+  project: WorkspaceProjectSummary | null,
+) {
+  return Boolean(
+    project &&
+    shot.shotType === "normal" &&
+    shot.globalNumber &&
+    shot.globalNumber <= project.lastShotNumber,
+  );
+}
 
 async function requestBackground(
   request: BackgroundRequest,
@@ -26,6 +44,10 @@ export function App() {
   const [sessionCount, setSessionCount] = useState(0);
   const [workspace, setWorkspace] = useState<WorkspaceContext | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedShotIds, setSelectedShotIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const scanGeneration = useRef(0);
 
   useEffect(() => {
     void (async () => {
@@ -65,11 +87,85 @@ export function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!capture) return;
+    const invalidateIfPageChanged = async () => {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (tab?.url && tab.url !== capture.sourceUrl) {
+        scanGeneration.current += 1;
+        setCapture(null);
+        setSelectedShotIds(new Set());
+        setActivity("idle");
+        setMessage(
+          "Cambiaste de página. La vista previa anterior se descartó; usá “Reiniciar y reescanear”.",
+        );
+      }
+    };
+    const handleActivated = () => void invalidateIfPageChanged();
+    const handleUpdated: Parameters<
+      typeof chrome.tabs.onUpdated.addListener
+    >[0] = (_tabId, changeInfo, tab) => {
+      if (tab.active && changeInfo.url) void invalidateIfPageChanged();
+    };
+    chrome.tabs.onActivated.addListener(handleActivated);
+    chrome.tabs.onUpdated.addListener(handleUpdated);
+    return () => {
+      chrome.tabs.onActivated.removeListener(handleActivated);
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+    };
+  }, [capture]);
+
   const selectedProject = useMemo(
     () =>
       workspace?.projects.find((item) => item.id === selectedProjectId) ?? null,
     [workspace, selectedProjectId],
   );
+  const previewShots = useMemo(
+    () => (capture ? detectedShots(capture) : []),
+    [capture],
+  );
+  const selectableShots = useMemo(
+    () =>
+      previewShots.filter((shot) => !isAlreadyStored(shot, selectedProject)),
+    [previewShots, selectedProject],
+  );
+  const existingPreviewCount = previewShots.length - selectableShots.length;
+  const selectedPreviewCount = selectableShots.filter((shot) =>
+    selectedShotIds.has(shot.id),
+  ).length;
+  const selectionConflictIds = useMemo(() => {
+    const conflicts = new Set<string>();
+    let expected = selectedProject?.nextShotNumber ?? 1;
+    const selectedNormals = selectableShots
+      .filter(
+        (shot) =>
+          selectedShotIds.has(shot.id) &&
+          shot.shotType === "normal" &&
+          shot.globalNumber,
+      )
+      .sort((a, b) => (a.globalNumber ?? 0) - (b.globalNumber ?? 0));
+    for (const shot of selectedNormals) {
+      if (shot.globalNumber !== expected) conflicts.add(shot.id);
+      else expected += 1;
+    }
+    return conflicts;
+  }, [selectableShots, selectedProject, selectedShotIds]);
+
+  function selectLoadableShots(
+    nextCapture: CaptureDraft,
+    project: WorkspaceProjectSummary | null,
+  ) {
+    setSelectedShotIds(
+      new Set(
+        detectedShots(nextCapture)
+          .filter((shot) => !isAlreadyStored(shot, project))
+          .map((shot) => shot.id),
+      ),
+    );
+  }
 
   async function refreshWorkspace() {
     const response = await requestBackground({ type: "workspace.list" });
@@ -87,6 +183,7 @@ export function App() {
       response.workspace.projects[0] ??
       null;
     setSelectedProjectId(selected?.id ?? "");
+    if (capture) selectLoadableShots(capture, selected);
     setMessage(
       selected
         ? "Lista de proyectos actualizada."
@@ -96,6 +193,9 @@ export function App() {
 
   function selectProject(projectId: string) {
     setSelectedProjectId(projectId);
+    const project =
+      workspace?.projects.find((item) => item.id === projectId) ?? null;
+    if (capture) selectLoadableShots(capture, project);
     void chrome.storage.local.set({
       framesyncSelectedProjectId: projectId,
     });
@@ -103,60 +203,89 @@ export function App() {
 
   function projectRules(project: WorkspaceProjectSummary) {
     const projectLabel = `PRJ-${String(project.projectNumber).padStart(4, "0")}`;
-    return `REGLAS DE ESTRUCTURA PARA FRAMESYNC
+    return `CONTRATO TÉCNICO DE ENTREGA PARA FRAMESYNC
 
 Proyecto: ${projectLabel} · ${project.name}
 Identificador interno: ${project.id}
+Último plano normal guardado: ${project.lastShotNumber}
+Siguiente plano para una continuación: ${project.nextShotNumber}
 
-1. EPISODIO es opcional. Usar "EPISODIO 1 — Título".
-2. Dentro del episodio, dividir el contenido en "ESCENA 1 — Título", "ESCENA 2 — Título", etc.
-3. Los PLANOS son globales para todo el proyecto: nunca reiniciar su numeración al cambiar de escena o episodio.
-4. Este proyecto ya contiene planos normales hasta P${String(project.lastShotNumber).padStart(3, "0")}.
-5. El próximo plano nuevo debe ser P${String(project.nextShotNumber).padStart(3, "0")}; continuar P${String(project.nextShotNumber + 1).padStart(3, "0")}, P${String(project.nextShotNumber + 2).padStart(3, "0")}, sin saltos ni repeticiones.
-6. Formato de plano normal: "PLANO ${project.nextShotNumber} — Título" o "P${String(project.nextShotNumber).padStart(3, "0")} — Título".
-7. Un plano especial sin número debe indicarse como "PLANO ESPECIAL — Título". No reutilizar un número normal.
-8. Una variante debe indicarse como "VARIANTE DE PLANO N — Título".
-9. Para cada plano incluir, cuando corresponda: descripción visual, acción, encuadre, ángulo, movimiento, duración, diálogo, prompt de imagen y prompt de video.
-10. Para asociar medios posteriores, escribir siempre el código exacto del plano: "PRIMER FRAME PNNN", "STORYBOARD PNNN" o "VIDEO FINAL PNNN".
+OBJETIVO
+Entregar únicamente los bloques técnicos que FrameSync debe cargar. No escribir ejemplos, listas de control, índices, nombres de archivos ni explicaciones que repitan códigos de planos: FrameSync podría interpretarlos como planos adicionales. Cada código de plano debe aparecer una sola vez y únicamente como encabezado de su bloque técnico real.
 
-PLANTILLA RECOMENDADA:
+CONTRATO DE CANTIDAD
+1. Antes de escribir los bloques, determinar exactamente cuántos planos pidió el usuario.
+2. La respuesta importable debe comenzar con el marcador INICIO_CONTENIDO_FRAMESYNC.
+3. Inmediatamente después debe declarar:
+   TOTAL_PLANOS_A_CARGAR: [cantidad exacta solicitada]
+   RANGO_PLANOS_A_CARGAR: [primer número solicitado]-[último número solicitado]
+4. La cantidad declarada debe coincidir con la cantidad de bloques técnicos reales.
+5. Si el usuario pide del plano 1 al 10, entregar exactamente diez bloques, numerados del 1 al 10. No comenzar en 34, 35 ni usar la continuidad guardada, porque el rango explícito del usuario tiene prioridad.
+6. Si el usuario pide agregar planos y no indica un número inicial, continuar desde ${project.nextShotNumber}. Declarar cuántos se agregarán y el rango consecutivo completo. Nunca repetir los ya guardados.
+7. Si más adelante se retoma el proyecto, volver a declarar el total de esa nueva tanda y su rango. El primer número debe ser el siguiente al último plano guardado, salvo que el usuario ordene expresamente rehacer o sustituir un rango anterior.
+8. Si la cantidad pedida, el rango y el contenido disponible se contradicen, detenerse y pedir aclaración. No inventar bloques adicionales.
 
-EPISODIO N — Título (opcional)
-ESCENA N — Título
-P${String(project.nextShotNumber).padStart(3, "0")} — Título del plano
-DESCRIPCIÓN VISUAL: ...
-ACCIÓN: ...
-TIPO DE PLANO: ...
-ÁNGULO: ...
-MOVIMIENTO: ...
-DURACIÓN: ... s
-DIÁLOGO: ...
-PROMPT PARA GENERAR EL PRIMER FRAME: ...
-MOVIMIENTO DEL VIDEO: ...
+ESTRUCTURA IMPORTABLE
+1. EPISODIO es opcional y las escenas se numeran consecutivamente.
+2. La numeración de los planos es global y no se reinicia al cambiar de escena o episodio.
+3. Cada bloque técnico real debe tener un único encabezado con su número y título.
+4. Dentro de cada bloque incluir: descripción visual, acción, tipo de plano, encuadre, ángulo, movimiento de cámara, duración, diálogo, continuidad, storyboard, prompt del primer frame y prompt de video.
+5. PLANO, PRIMER FRAME y VIDEO son elementos diferentes:
+   - El plano define la unidad narrativa y lo que sucede.
+   - El primer frame es la imagen inicial exacta anterior al primer movimiento.
+   - El video desarrolla la acción desde ese primer frame.
+6. El primer frame nunca debe mostrar una acción ya iniciada. Si alguien va a saltar una escalera, debe estar detrás o al pie de ella, preparado para saltar, nunca en el aire.
+7. El prompt del primer frame debe fijar posición, pose previa, mirada, cámara, luz, escenario y continuidad sin anticipar el resultado.
+8. El prompt de video debe comenzar exactamente desde ese estado inicial y describir en orden cómo empieza, progresa y termina la acción.
+9. Puede haber varias variantes de video dentro del mismo bloque. Son alternativas del mismo plano y nunca crean números nuevos.
 
-No renumeres ni reescribas los planos existentes salvo que se pida expresamente una corrección.`;
+FICHA TÉCNICA OBLIGATORIA DEL VIDEO
+Antes del PROMPT DE VIDEO, incluir siempre estos rótulos dentro de cada plano. Completar únicamente lo que esté definido; si un dato no fue decidido, dejar el valor vacío y no inventarlo:
+VIDEO CÁMARA: cuerpo, cámara virtual, dron, FPV o sistema de captura.
+VIDEO LENTE: óptica, distancia focal y característica relevante (macro, anamórfica, fisheye, split-diopter, etc.).
+VIDEO TIPO DE PLANO: tamaño cinematográfico exacto (gran plano general, plano general, plano americano, plano medio, primer plano, primerísimo primer plano, plano detalle, etc.).
+VIDEO ÁNGULO: posición de cámara (frontal, perfil, tres cuartos, picado, contrapicado, cenital, nadir, ras del suelo, POV, etc.).
+VIDEO MOVIMIENTO DE CÁMARA: desplazamiento y comportamiento exactos, incluyendo velocidad, dirección, estabilización y foco cuando corresponda.
+VIDEO CADENCIA: FPS o cadencia si fue definida.
+VIDEO ILUMINACIÓN: dirección, calidad, temperatura, contraste, fuentes y cambios de luz durante el plano.
+VIDEO EFECTOS: efectos prácticos, atmosféricos, ópticos o VFX necesarios.
+VIDEO TRANSICIÓN: entrada o salida del plano si fue definida.
+VIDEO INICIO: estado exacto heredado del primer frame, antes del primer movimiento.
+VIDEO DESARROLLO: progresión temporal y orden de las acciones.
+VIDEO FINAL: estado visual exacto donde termina el clip.
+VIDEO CONTINUIDAD: identidad, vestuario, utilería, posición, dirección de mirada, eje y restricciones que deben conservarse.
+
+El PROMPT DE VIDEO se redacta después de esta ficha y debe respetar todos sus valores. No trasladar a esta ficha información exclusiva del storyboard ni completar campos por intuición.
+
+PROHIBICIONES
+- No agregar una lista final de numeración.
+- No agregar una sección de archivos resultantes.
+- No escribir nombres terminados en .png, .jpg, .mp4, .mov o similares.
+- No repetir códigos en resúmenes, explicaciones, storyboard, primer frame o video.
+- No incluir plantillas con códigos de ejemplo.
+- No mencionar planos que no vayan a cargarse.
+- No renumerar silenciosamente.
+- No producir más bloques que el total declarado.
+
+CIERRE
+Después del último bloque técnico escribir una sola vez FIN_CONTENIDO_FRAMESYNC. Fuera de esos marcadores no repetir números ni códigos de planos.`;
   }
 
   async function copyRules() {
     if (!selectedProject) return;
-    await navigator.clipboard.writeText(projectRules(selectedProject));
-    setMessage(
-      `Reglas copiadas para PRJ-${String(selectedProject.projectNumber).padStart(4, "0")}.`,
-    );
-  }
-
-  function downloadRules() {
-    if (!selectedProject) return;
-    const blob = new Blob([projectRules(selectedProject)], {
-      type: "text/markdown;charset=utf-8",
+    const projectCode = `PRJ-${String(selectedProject.projectNumber).padStart(4, "0")}`;
+    const response = await requestBackground({
+      type: "rules.copyFile",
+      filename: `FrameSync-${projectCode}-reglas.md`,
+      content: projectRules(selectedProject),
     });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `FrameSync-PRJ-${String(selectedProject.projectNumber).padStart(4, "0")}-reglas.md`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setMessage("Reglas guardadas como archivo Markdown.");
+    if (!response.ok) {
+      setMessage(response.message);
+      return;
+    }
+    setMessage(
+      `Archivo de reglas copiado. Pegalo en la IA con Ctrl+V para adjuntarlo.`,
+    );
   }
 
   const roleCounts = useMemo(() => {
@@ -164,8 +293,19 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
     for (const item of capture?.messages ?? []) counts[item.role] += 1;
     return counts;
   }, [capture]);
+  const mediaCounts = useMemo(() => {
+    const counts = { images: 0, videos: 0 };
+    for (const item of capture?.imageCandidates ?? []) {
+      if (item.kind === "video") counts.videos += 1;
+      else counts.images += 1;
+    }
+    return counts;
+  }, [capture]);
 
-  async function capturePage(mode: "full" | "loaded" | "selection") {
+  async function capturePage(
+    mode: "full" | "loaded" | "selection",
+    requestedGeneration?: number,
+  ) {
     if (
       mode === "full" &&
       !window.confirm(
@@ -174,9 +314,14 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
     ) {
       return;
     }
+    const generation = requestedGeneration ?? scanGeneration.current + 1;
+    scanGeneration.current = generation;
+    setCapture(null);
+    setSelectedShotIds(new Set());
     setActivity("capturing");
-    setMessage("Leyendo contenido visible y preparando la vista previa…");
+    setMessage("Contadores reiniciados en cero. Escaneando la página actual…");
     const response = await requestBackground({ type: "capture.page", mode });
+    if (generation !== scanGeneration.current) return;
     if (!response.ok) {
       setActivity("error");
       setMessage(response.message);
@@ -184,13 +329,30 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
     }
     if ("capture" in response) {
       setCapture(response.capture);
+      selectLoadableShots(response.capture, selectedProject);
       setActivity("idle");
       setMessage(
-        response.capture.messages.length > 0
-          ? "Captura lista para revisar."
-          : "La captura quedó vacía. Probá selección manual.",
+        response.capture.messages.length > 0 ||
+          response.capture.imageCandidates.length > 0
+          ? `Vista previa lista: ${detectedShots(response.capture).length} planos detectados. Revisalos antes de enviar.`
+          : "La captura quedó vacía. Probá selección manual o una página con medios visibles.",
       );
     }
+  }
+
+  async function restartAndRescan() {
+    const generation = scanGeneration.current + 1;
+    scanGeneration.current = generation;
+    setCapture(null);
+    setSelectedShotIds(new Set());
+    setActivity("idle");
+    setMessage("Reiniciando y leyendo la pestaña actual desde cero…");
+    if (sessionActive) {
+      await requestBackground({ type: "session.control", action: "stop" });
+      setSessionActive(false);
+      setSessionCount(0);
+    }
+    await capturePage("loaded", generation);
   }
 
   async function controlSession(action: "start" | "stop") {
@@ -212,7 +374,10 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
     }
     setSessionActive(response.session.active);
     setSessionCount(response.session.count);
-    if (response.session.capture) setCapture(response.session.capture);
+    if (response.session.capture) {
+      setCapture(response.session.capture);
+      selectLoadableShots(response.session.capture, selectedProject);
+    }
     setMessage(
       action === "start"
         ? "Seguimiento activo. Los mensajes se agregan cuando dejan de cambiar."
@@ -222,11 +387,27 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
 
   async function sendCapture() {
     if (!capture || !selectedProject) return;
+    if (
+      previewShots.length > 0 &&
+      selectedPreviewCount === 0 &&
+      !window.confirm(
+        "No seleccionaste ningÃºn plano. Se enviarÃ¡ solamente la fuente y los medios, sin planos. Â¿Continuar?",
+      )
+    ) {
+      return;
+    }
     setActivity("sending");
-    setMessage("Transfiriendo fuente e imágenes al equipo…");
+    setMessage(
+      `Transfiriendo fuente con ${selectedPreviewCount} planos elegidos…`,
+    );
     const response = await requestBackground({
       type: "capture.send",
-      capture,
+      capture: {
+        ...capture,
+        selectedShotIds: selectableShots
+          .filter((shot) => selectedShotIds.has(shot.id))
+          .map((shot) => shot.id),
+      },
       destinationProjectId: selectedProject.id,
       destinationProjectName: selectedProject.name,
     });
@@ -239,7 +420,7 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
     }
     setActivity("sent");
     setMessage(
-      `Enviado. ${response.sent.transferredAssets} imágenes transferidas; ${response.sent.skippedAssets} conservaron solo su referencia.`,
+      `Enviado: ${selectedPreviewCount} planos elegidos y ${response.sent.transferredAssets} medios transferidos; ${response.sent.skippedAssets} conservaron sólo su referencia.`,
     );
   }
 
@@ -271,6 +452,31 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
         <p>{message}</p>
       </section>
 
+      <div className="restart-scan">
+        <button
+          type="button"
+          disabled={activity === "capturing" || activity === "sending"}
+          onClick={() => void restartAndRescan()}
+        >
+          <span aria-hidden="true">↻</span>
+          Reiniciar y reescanear página actual
+        </button>
+        <small>
+          Descarta la captura anterior y vuelve a contar desde cero.
+        </small>
+      </div>
+
+      <div className={`current-scan ${capture ? "ready" : "empty"}`}>
+        <span>PÁGINA ACTUAL · RESULTADO DEL ÚLTIMO ESCANEO</span>
+        <strong>{previewShots.length} planos detectados en esta página</strong>
+        <small>
+          {capture
+            ? `${capture.messages.length} mensajes · ${mediaCounts.images} imágenes · ${mediaCounts.videos} videos`
+            : "Todavía no hay una captura válida de la pestaña actual."}
+        </small>
+        {capture && <code>{capture.sourceUrl}</code>}
+      </div>
+
       <section className="project-target">
         <div className="section-heading">
           <span>00</span>
@@ -297,18 +503,52 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
         </div>
         {selectedProject && (
           <div className="project-memory">
-            <span>
-              {selectedProject.episodeCount} episodios ·{" "}
-              {selectedProject.sceneCount} escenas
-            </span>
-            <strong>
-              {selectedProject.shotCount} planos · próximo P
-              {String(selectedProject.nextShotNumber).padStart(3, "0")}
-            </strong>
+            <details className="stored-project-details">
+              <summary>Ver datos ya guardados en la aplicación</summary>
+              <span className="stored-data-label">
+                ESTOS NÚMEROS NO PERTENECEN AL ESCANEO DE LA PÁGINA ACTUAL
+              </span>
+              <dl className="project-metrics">
+                <div>
+                  <dt>Ya importados</dt>
+                  <dd>
+                    {selectedProject.episodeCount ?? 0} episodios ·{" "}
+                    {selectedProject.sceneCount ?? 0} escenas ·{" "}
+                    {selectedProject.shotCount ?? 0} planos
+                  </dd>
+                </div>
+                <div>
+                  <dt>Medios</dt>
+                  <dd>
+                    {selectedProject.imageCount ?? 0} imágenes ·{" "}
+                    {selectedProject.videoCount ?? 0} videos
+                  </dd>
+                </div>
+                <div>
+                  <dt>Cobertura</dt>
+                  <dd>
+                    {selectedProject.shotsWithFirstFrameCount ?? 0}/
+                    {selectedProject.shotCount ?? 0} primeros frames ·{" "}
+                    {selectedProject.shotsWithVideoCount ?? 0}/
+                    {selectedProject.shotCount ?? 0} planos con video
+                  </dd>
+                </div>
+              </dl>
+              <strong>
+                Próximo plano nuevo: P
+                {String(selectedProject.nextShotNumber ?? 1).padStart(3, "0")}
+              </strong>
+              {(selectedProject.unassignedImageCount > 0 ||
+                selectedProject.unassignedVideoCount > 0) && (
+                <span className="metric-warning">
+                  Sin asignar: {selectedProject.unassignedImageCount} imágenes ·{" "}
+                  {selectedProject.unassignedVideoCount} videos
+                </span>
+              )}
+            </details>
             <button onClick={() => void copyRules()}>
-              Copiar reglas para la IA
+              Copiar archivo de reglas para la IA
             </button>
-            <button onClick={downloadRules}>Descargar reglas .md</button>
           </div>
         )}
       </section>
@@ -376,7 +616,11 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
               </div>
               <div>
                 <dt>Imágenes</dt>
-                <dd>{capture.imageCandidates.length}</dd>
+                <dd>{mediaCounts.images}</dd>
+              </div>
+              <div>
+                <dt>Videos</dt>
+                <dd>{mediaCounts.videos}</dd>
               </div>
               <div>
                 <dt>Usuario</dt>
@@ -387,7 +631,97 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
                 <dd>{roleCounts.assistant}</dd>
               </div>
             </dl>
+            <div className="shot-preview">
+              <div className="shot-preview-heading">
+                <div>
+                  <strong>PLANOS EN ESTA CAPTURA</strong>
+                  <span>
+                    {previewShots.length} detectados · {existingPreviewCount} ya
+                    guardados · {selectableShots.length} disponibles para cargar
+                  </span>
+                </div>
+                <div className="shot-preview-actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedShotIds(
+                        new Set(selectableShots.map((shot) => shot.id)),
+                      )
+                    }
+                  >
+                    Elegir todos
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedShotIds(new Set())}
+                  >
+                    Ninguno
+                  </button>
+                </div>
+              </div>
+              <div className="selection-total">
+                <strong>{selectedPreviewCount}</strong> planos elegidos para
+                enviar
+              </div>
+              {previewShots.length > 0 ? (
+                <div className="shot-preview-list">
+                  {previewShots.map((shot) => {
+                    const stored = isAlreadyStored(shot, selectedProject);
+                    const numberingConflict = selectionConflictIds.has(shot.id);
+                    return (
+                      <label
+                        className={`shot-choice ${stored ? "stored" : ""} ${
+                          numberingConflict ? "conflict" : ""
+                        }`}
+                        key={shot.id}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!stored && selectedShotIds.has(shot.id)}
+                          disabled={stored}
+                          onChange={(event) =>
+                            setSelectedShotIds((current) => {
+                              const next = new Set(current);
+                              if (event.target.checked) next.add(shot.id);
+                              else next.delete(shot.id);
+                              return next;
+                            })
+                          }
+                        />
+                        <span>
+                          <strong>
+                            {shot.code ?? shot.specialCode ?? "SIN NÚMERO"}
+                          </strong>
+                          <small>
+                            {shot.sceneCode ?? "Sin escena"} · {shot.title}
+                          </small>
+                        </span>
+                        <em>
+                          {stored
+                            ? "YA EXISTE"
+                            : numberingConflict
+                              ? "REVISAR NÚMERO"
+                              : "NUEVO"}
+                        </em>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="empty compact">
+                  No se detectaron planos en el contenido capturado.
+                </p>
+              )}
+              <p className="selection-help">
+                Nada de esta lista se crea todavía. FrameSync enviará solamente
+                los planos marcados; después los revisás en la aplicación antes
+                de importarlos.
+              </p>
+            </div>
             <div className="source-meta">
+              <small className="capture-page-label">
+                CAPTURA CORRESPONDIENTE A ESTA PÁGINA
+              </small>
               <strong>{capture.conversationTitle ?? "Sin título"}</strong>
               <span>{capture.platform.toUpperCase()}</span>
               <p>{capture.sourceUrl}</p>
@@ -426,7 +760,8 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
           className="send"
           disabled={
             !capture ||
-            capture.messages.length === 0 ||
+            (capture.messages.length === 0 &&
+              capture.imageCandidates.length === 0) ||
             !selectedProject ||
             !hostConnected ||
             activity === "sending"
@@ -437,7 +772,9 @@ No renumeres ni reescribas los planos existentes salvo que se pida expresamente 
             ? "Enviando…"
             : activity === "sent"
               ? "Enviado ✓"
-              : "Enviar a FrameSync"}
+              : previewShots.length > 0
+                ? `Enviar ${selectedPreviewCount} planos`
+                : "Enviar fuente a FrameSync"}
         </button>
       </footer>
     </main>

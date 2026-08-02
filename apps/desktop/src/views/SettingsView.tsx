@@ -106,7 +106,7 @@ export function SettingsView() {
       setUpdate(available);
       if (!available) {
         setUpdatePhase("current");
-        setUpdateMessage("FrameSync está actualizado.");
+        setUpdateMessage("Storyboard Wana está actualizado.");
         return;
       }
       setUpdatePhase("available");
@@ -127,7 +127,7 @@ export function SettingsView() {
     if (!update) return;
     setUpdatePhase("downloading");
     setProgress(0);
-    setUpdateMessage(`Descargando FrameSync ${update.version}…`);
+    setUpdateMessage(`Descargando Storyboard Wana ${update.version}…`);
     let downloaded = 0;
     let total = 0;
     try {
@@ -143,7 +143,7 @@ export function SettingsView() {
       });
       setUpdatePhase("ready");
       setUpdateMessage(
-        "Actualización instalada. FrameSync se reiniciará para aplicarla.",
+        "Actualización instalada. Storyboard Wana se reiniciará para aplicarla.",
       );
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
@@ -185,7 +185,7 @@ export function SettingsView() {
           <span className="section-code">SISTEMA / CONFIGURACIÓN</span>
           <h1>Aplicación, extensión y actualizaciones</h1>
           <p>
-            Todo lo necesario para mantener FrameSync y el puente de Edge
+            Todo lo necesario para mantener Storyboard Wana y el puente de Edge
             funcionando en este equipo.
           </p>
         </div>
@@ -219,8 +219,8 @@ export function SettingsView() {
             <div>
               <strong>
                 {updatePhase === "available"
-                  ? `FrameSync ${update?.version}`
-                  : `FrameSync ${version}`}
+                  ? `Storyboard Wana ${update?.version}`
+                  : `Storyboard Wana ${version}`}
               </strong>
               <p>{updateMessage}</p>
             </div>
@@ -269,7 +269,7 @@ export function SettingsView() {
             </div>
             <div>
               <span className="section-code">MICROSOFT EDGE · CHROMIUM</span>
-              <h2>FrameSync Capture para Edge</h2>
+              <h2>Storyboard Wana Capture para Edge</h2>
             </div>
             <span
               className={`settings-state ${integrationReady ? "online" : "offline"}`}

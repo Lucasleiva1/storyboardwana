@@ -146,6 +146,84 @@ footer span {
   line-height: 1.4;
 }
 
+.restart-scan {
+  display: grid;
+  gap: 5px;
+  padding: 12px 0 2px;
+}
+
+.restart-scan button {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-color: #b47b22;
+  color: #f1b64c;
+  background: #19150e;
+  font-weight: 650;
+}
+
+.restart-scan button span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.restart-scan small {
+  color: #7f8487;
+  font-size: 9px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.current-scan {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid #5a4524;
+  border-left: 3px solid #d69a34;
+  background: #121416;
+}
+
+.current-scan > span,
+.stored-data-label {
+  color: #8d9295;
+  font:
+    650 7px/1.35 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+  letter-spacing: 0.1em;
+}
+
+.current-scan > strong {
+  color: #f0b34a;
+  font-size: 14px;
+}
+
+.current-scan > small {
+  color: #a5a9ab;
+  font-size: 10px;
+}
+
+.current-scan code {
+  overflow: hidden;
+  color: #777c7f;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-scan.empty {
+  border-color: #664139;
+  border-left-color: #d26c58;
+}
+
+.current-scan.empty > strong {
+  color: #ef8a76;
+}
+
 section {
   padding: 18px 0;
   border-bottom: 1px solid #292c2f;
@@ -219,6 +297,71 @@ section {
 
 .project-memory strong {
   color: #e1aa49;
+}
+
+.project-metrics {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.project-metrics div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.project-metrics dt {
+  color: #696e72;
+  font:
+    600 8px/1.35 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.project-metrics dd {
+  margin: 0;
+  color: #b8bbbd;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.project-memory .metric-warning {
+  color: #e38a6e;
+}
+
+.project-memory .stored-data-label {
+  display: block;
+  margin: 8px 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid #2d3033;
+  color: #d08a76;
+  line-height: 1.5;
+}
+
+.stored-project-details {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #303336;
+}
+
+.stored-project-details summary {
+  color: #a6aaad;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.stored-project-details[open] summary {
+  margin-bottom: 8px;
+  color: #e0a546;
+}
+
+.stored-project-details > strong,
+.stored-project-details > .metric-warning {
+  display: block;
+  margin-top: 7px;
 }
 
 .project-memory button {
@@ -302,8 +445,169 @@ button.danger {
     monospace;
 }
 
+.shot-preview {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 14px;
+  padding: 10px;
+  border: 1px solid #4a3a20;
+  background: #0f1113;
+}
+
+.shot-preview-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.shot-preview-heading strong {
+  display: block;
+  color: #e3a844;
+  font:
+    650 9px/1.3 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+  letter-spacing: 0.1em;
+}
+
+.shot-preview-heading span {
+  display: block;
+  margin-top: 3px;
+  color: #a6aaad;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.shot-preview-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.shot-preview-actions button {
+  min-height: 30px;
+  font-size: 10px;
+}
+
+.selection-total {
+  padding: 8px;
+  border-left: 2px solid #d69a34;
+  color: #b9bdc0;
+  background: #15181a;
+  font-size: 10px;
+}
+
+.selection-total strong {
+  margin-right: 3px;
+  color: #f2b64a;
+  font-size: 15px;
+}
+
+.shot-preview-list {
+  display: grid;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid #303336;
+}
+
+.shot-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border-bottom: 1px solid #292c2f;
+  cursor: pointer;
+}
+
+.shot-choice:last-child {
+  border-bottom: 0;
+}
+
+.shot-choice:hover {
+  background: #16191c;
+}
+
+.shot-choice input {
+  accent-color: #d69a34;
+}
+
+.shot-choice span {
+  min-width: 0;
+}
+
+.shot-choice strong,
+.shot-choice small {
+  display: block;
+}
+
+.shot-choice strong {
+  color: #e7e4dc;
+  font:
+    650 10px/1.3 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+}
+
+.shot-choice small {
+  overflow: hidden;
+  margin-top: 2px;
+  color: #909497;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-choice em {
+  color: #61c989;
+  font:
+    650 7px/1.2 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+  font-style: normal;
+}
+
+.shot-choice.stored {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.shot-choice.stored em {
+  color: #8f9497;
+}
+
+.shot-choice.conflict {
+  background: rgba(194, 91, 70, 0.08);
+}
+
+.shot-choice.conflict em {
+  color: #ef8a72;
+}
+
+.selection-help {
+  margin: 0;
+  color: #858a8d;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.empty.compact {
+  padding: 9px;
+}
+
 .source-meta {
   min-width: 0;
+}
+
+.capture-page-label {
+  display: block;
+  margin-bottom: 5px;
+  color: #6f7477;
+  font:
+    650 7px/1.3 ui-monospace,
+    "Cascadia Mono",
+    monospace;
+  letter-spacing: 0.1em;
 }
 
 .source-meta strong {

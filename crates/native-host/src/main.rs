@@ -130,6 +130,13 @@ enum NativeRequest {
         protocol_version: u8,
         request_id: String,
     },
+    #[serde(rename = "clipboard.file", rename_all = "camelCase")]
+    ClipboardFile {
+        protocol_version: u8,
+        request_id: String,
+        filename: String,
+        content: String,
+    },
 }
 
 impl NativeRequest {
@@ -155,6 +162,9 @@ impl NativeRequest {
             }
             | Self::WorkspaceList {
                 protocol_version, ..
+            }
+            | Self::ClipboardFile {
+                protocol_version, ..
             } => *protocol_version,
         }
     }
@@ -166,8 +176,9 @@ impl NativeRequest {
             | Self::AssetBegin { request_id, .. }
             | Self::AssetChunk { request_id, .. }
             | Self::AssetEnd { request_id, .. }
-            | Self::CaptureCommit { request_id, .. } => request_id,
-            Self::WorkspaceList { request_id, .. } => request_id,
+            | Self::CaptureCommit { request_id, .. }
+            | Self::WorkspaceList { request_id, .. }
+            | Self::ClipboardFile { request_id, .. } => request_id,
         }
     }
 }
@@ -308,6 +319,12 @@ impl HostState {
                 ..
             } => self.capture_commit(request_id, &capture_id),
             NativeRequest::WorkspaceList { request_id, .. } => self.workspace_list(request_id),
+            NativeRequest::ClipboardFile {
+                request_id,
+                filename,
+                content,
+                ..
+            } => self.clipboard_file(request_id, &filename, &content),
         };
 
         result.unwrap_or_else(|error| {
@@ -348,6 +365,40 @@ impl HostState {
             request_id,
             "FrameSync project context loaded.",
             context,
+        ))
+    }
+
+    fn clipboard_file(
+        &self,
+        request_id: String,
+        filename: &str,
+        content: &str,
+    ) -> io::Result<NativeResponse> {
+        validate_clipboard_filename(filename).map_err(io::Error::other)?;
+        if content.is_empty() || content.len() > 1_000_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Clipboard file content is outside the allowed size.",
+            ));
+        }
+        let root = self
+            .inbox_root
+            .parent()
+            .ok_or_else(|| io::Error::other("FrameSync root is unavailable."))?
+            .join("clipboard");
+        fs::create_dir_all(&root)?;
+        let path = root.join(filename);
+        let temporary = root.join(format!("{filename}.tmp"));
+        fs::write(&temporary, content.as_bytes())?;
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+        fs::rename(temporary, &path)?;
+        copy_file_to_clipboard(&path)?;
+        Ok(NativeResponse::ok_with_data(
+            request_id,
+            "FrameSync rules file copied to the Windows clipboard.",
+            json!({ "path": path }),
         ))
     }
 
@@ -607,9 +658,6 @@ fn validate_capture(capture: &CaptureEnvelopeWithoutAssets) -> Result<(), &'stat
     if capture.protocol_version != PROTOCOL_VERSION {
         return Err("Capture protocol version is unsupported.");
     }
-    if capture.messages.is_empty() {
-        return Err("Capture contains no messages.");
-    }
     if !matches!(capture.platform.as_str(), "chatgpt" | "gemini" | "generic") {
         return Err("Capture platform is invalid.");
     }
@@ -688,6 +736,122 @@ fn validate_id(value: &str) -> Result<(), &'static str> {
         return Err("Identifier contains unsafe characters.");
     }
     Ok(())
+}
+
+fn validate_clipboard_filename(value: &str) -> Result<(), &'static str> {
+    if value.is_empty()
+        || value.len() > 120
+        || !value.ends_with(".md")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err("Clipboard filename is invalid.");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_file_to_clipboard(path: &Path) -> io::Result<()> {
+    use std::{ffi::c_void, mem::size_of, os::windows::ffi::OsStrExt, ptr, thread, time::Duration};
+
+    const CF_HDROP: u32 = 15;
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    const GMEM_ZEROINIT: u32 = 0x0040;
+    const DROPFILES_SIZE: usize = 20;
+
+    #[link(name = "User32")]
+    unsafe extern "system" {
+        fn OpenClipboard(owner: *mut c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn EmptyClipboard() -> i32;
+        fn SetClipboardData(format: u32, memory: *mut c_void) -> *mut c_void;
+    }
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+        fn GlobalFree(memory: *mut c_void) -> *mut c_void;
+        fn GlobalLock(memory: *mut c_void) -> *mut c_void;
+        fn GlobalUnlock(memory: *mut c_void) -> i32;
+    }
+
+    let absolute = fs::canonicalize(path)?;
+    let mut wide_path: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    wide_path.push(0);
+    wide_path.push(0);
+    let total_bytes = DROPFILES_SIZE + wide_path.len() * size_of::<u16>();
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total_bytes) };
+    if memory.is_null() {
+        return Err(io::Error::other(
+            "Windows could not allocate clipboard memory.",
+        ));
+    }
+
+    let locked = unsafe { GlobalLock(memory) };
+    if locked.is_null() {
+        unsafe {
+            GlobalFree(memory);
+        }
+        return Err(io::Error::other("Windows could not lock clipboard memory."));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts_mut(locked.cast::<u8>(), total_bytes) };
+    bytes[0..4].copy_from_slice(&(DROPFILES_SIZE as u32).to_le_bytes());
+    bytes[16..20].copy_from_slice(&1_i32.to_le_bytes());
+    let path_bytes = unsafe {
+        std::slice::from_raw_parts(
+            wide_path.as_ptr().cast::<u8>(),
+            wide_path.len() * size_of::<u16>(),
+        )
+    };
+    bytes[DROPFILES_SIZE..].copy_from_slice(path_bytes);
+    unsafe {
+        GlobalUnlock(memory);
+    }
+
+    let mut opened = false;
+    for _ in 0..20 {
+        if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+            opened = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    if !opened {
+        unsafe {
+            GlobalFree(memory);
+        }
+        return Err(io::Error::other(
+            "The Windows clipboard is busy. Try again.",
+        ));
+    }
+    if unsafe { EmptyClipboard() } == 0 {
+        unsafe {
+            CloseClipboard();
+            GlobalFree(memory);
+        }
+        return Err(io::Error::other("Windows could not clear the clipboard."));
+    }
+    if unsafe { SetClipboardData(CF_HDROP, memory) }.is_null() {
+        unsafe {
+            CloseClipboard();
+            GlobalFree(memory);
+        }
+        return Err(io::Error::other(
+            "Windows could not place the file on the clipboard.",
+        ));
+    }
+    unsafe {
+        CloseClipboard();
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn copy_file_to_clipboard(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "File clipboard copy is only available on Windows.",
+    ))
 }
 
 fn asset_key(capture_id: &str, asset_id: &str) -> String {
@@ -851,6 +1015,13 @@ mod tests {
         assert!(validate_id("capture-01").is_ok());
         assert!(validate_id("../capture").is_err());
         assert!(validate_id("C:\\capture").is_err());
+    }
+
+    #[test]
+    fn clipboard_rule_filenames_are_restricted_to_markdown() {
+        assert!(validate_clipboard_filename("FrameSync-PRJ-0001-reglas.md").is_ok());
+        assert!(validate_clipboard_filename("reglas.txt").is_err());
+        assert!(validate_clipboard_filename("../reglas.md").is_err());
     }
 
     #[test]

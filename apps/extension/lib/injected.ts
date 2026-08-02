@@ -67,21 +67,34 @@ export async function captureDocumentInjected(
   }
 
   function chatGptElements() {
-    const selectors = [
-      "main [data-message-author-role]",
-      'main [data-testid^="conversation-turn-"]',
-      "main article",
-    ];
-    const nodes = Array.from(
-      document.querySelectorAll(selectors.join(",")),
-    ).filter((element, index, all) => {
-      if (!visible(element)) return false;
-      return !all.some(
-        (candidate, candidateIndex) =>
-          candidateIndex !== index && candidate.contains(element),
+    const usable = (element: Element) => {
+      if (element.getAttribute("aria-hidden") === "true") return false;
+      const style = getComputedStyle(element as HTMLElement);
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        normalizeText((element as HTMLElement).innerText ?? "").length > 0
       );
-    });
-    return nodes;
+    };
+    const firstUsefulGroup = [
+      'main [data-testid^="conversation-turn-"]',
+      "main [data-message-author-role]",
+      "main article",
+    ]
+      .map((selector) =>
+        Array.from(document.querySelectorAll(selector)).filter(usable),
+      )
+      .find((elements) => elements.length > 0);
+    if (firstUsefulGroup) return Array.from(new Set(firstUsefulGroup));
+
+    const main = document.querySelector("main");
+    if (main && usable(main)) {
+      warnings.push(
+        "ChatGPT no expuso sus contenedores habituales; se usó el contenido textual completo del área principal.",
+      );
+      return [main];
+    }
+    return [];
   }
 
   function genericElements() {
@@ -156,7 +169,7 @@ export async function captureDocumentInjected(
 
   async function collectImages(messages: MessageWithElement[]) {
     const candidates: InjectedCapture["imageCandidates"] = [];
-    const imageElements = Array.from(document.images).filter(
+    const imageElements = Array.from(document.querySelectorAll("img")).filter(
       (image) =>
         visible(image) && image.naturalWidth >= 96 && image.naturalHeight >= 96,
     );

@@ -1,5 +1,6 @@
 import type {
   AnalysisProposal,
+  AssetManifest,
   CaptureEnvelope,
   DetectedCharacter,
   DetectedEpisode,
@@ -48,8 +49,30 @@ export type ProductionShot = DetectedShot & {
     | "conflict"
     | "incomplete";
   firstFramePath?: string | null;
+  storyboardPaths?: string[];
   videoPath?: string | null;
+  videoPaths?: string[];
   storyboardAssetCount?: number;
+};
+
+export type ProductionAsset = Pick<
+  AssetManifest,
+  | "id"
+  | "kind"
+  | "role"
+  | "originalFilename"
+  | "mimeType"
+  | "byteSize"
+  | "width"
+  | "height"
+  | "durationMs"
+  | "relatedShotCode"
+  | "localPath"
+  | "sha256"
+  | "qualitySource"
+> & {
+  shotCode: string | null;
+  orderIndex: number | null;
 };
 
 export type ProductionData = {
@@ -59,6 +82,7 @@ export type ProductionData = {
   episodes: DetectedEpisode[];
   scenes: DetectedScene[];
   shots: ProductionShot[];
+  assets: ProductionAsset[];
 };
 
 export const EMPTY_PRODUCTION: ProductionData = {
@@ -68,4 +92,5 @@ export const EMPTY_PRODUCTION: ProductionData = {
   episodes: [],
   scenes: [],
   shots: [],
+  assets: [],
 };

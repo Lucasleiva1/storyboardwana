@@ -95,6 +95,7 @@ export const DEMO_CAPTURE: CaptureEnvelope = {
   capturedAt,
   destinationProjectId: null,
   destinationProjectName: null,
+  selectedShotIds: null,
   messages: sourceMessages.map((message, index) => ({
     id: `demo-message-${index + 1}`,
     orderIndex: index,

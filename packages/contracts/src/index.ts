@@ -85,6 +85,7 @@ export const CaptureEnvelopeSchema = z.object({
   capturedAt: z.string().datetime(),
   destinationProjectId: z.string().nullable().default(null),
   destinationProjectName: z.string().nullable().default(null),
+  selectedShotIds: z.array(z.string().min(1)).nullable().default(null),
   messages: z.array(CaptureMessageSchema),
   assets: z.array(AssetManifestSchema),
   diagnostics: z.object({
@@ -145,6 +146,17 @@ export const NativeRequestSchema = z.discriminatedUnion("type", [
     protocolVersion: ProtocolVersionSchema,
     type: z.literal("workspace.list"),
     requestId: z.string().min(1),
+  }),
+  z.object({
+    protocolVersion: ProtocolVersionSchema,
+    type: z.literal("clipboard.file"),
+    requestId: z.string().min(1),
+    filename: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-zA-Z0-9._-]+$/),
+    content: z.string().min(1).max(1_000_000),
   }),
 ]);
 
@@ -252,6 +264,22 @@ export const DetectedSceneSchema = ProvenanceSchema.extend({
   orderIndex: z.number().int().nonnegative(),
 });
 
+export const VideoTechnicalSchema = z.object({
+  camera: z.string().nullable().default(null),
+  lens: z.string().nullable().default(null),
+  shotType: z.string().nullable().default(null),
+  angle: z.string().nullable().default(null),
+  movement: z.string().nullable().default(null),
+  lighting: z.string().nullable().default(null),
+  effects: z.string().nullable().default(null),
+  transition: z.string().nullable().default(null),
+  start: z.string().nullable().default(null),
+  development: z.string().nullable().default(null),
+  end: z.string().nullable().default(null),
+  continuity: z.string().nullable().default(null),
+  frameRate: z.string().nullable().default(null),
+});
+
 export const DetectedShotSchema = ProvenanceSchema.extend({
   kind: z.literal("shot"),
   code: z.string().nullable(),
@@ -272,6 +300,21 @@ export const DetectedShotSchema = ProvenanceSchema.extend({
   dialogue: z.string().nullable(),
   imagePrompt: z.string().nullable(),
   videoPrompt: z.string().nullable(),
+  videoTechnical: VideoTechnicalSchema.default({
+    camera: null,
+    lens: null,
+    shotType: null,
+    angle: null,
+    movement: null,
+    lighting: null,
+    effects: null,
+    transition: null,
+    start: null,
+    development: null,
+    end: null,
+    continuity: null,
+    frameRate: null,
+  }),
 });
 
 export const DetectedPromptSchema = ProvenanceSchema.extend({
@@ -319,10 +362,20 @@ export const WorkspaceProjectSummarySchema = z.object({
   projectNumber: z.number().int().positive(),
   name: z.string().min(1),
   description: z.string().nullable().default(null),
+  sourceCount: z.number().int().nonnegative().default(0),
   episodeCount: z.number().int().nonnegative(),
   sceneCount: z.number().int().nonnegative(),
   shotCount: z.number().int().nonnegative(),
   specialShotCount: z.number().int().nonnegative(),
+  detectedShotCount: z.number().int().nonnegative().default(0),
+  pendingShotCount: z.number().int().nonnegative().default(0),
+  imageCount: z.number().int().nonnegative().default(0),
+  videoCount: z.number().int().nonnegative().default(0),
+  unassignedImageCount: z.number().int().nonnegative().default(0),
+  unassignedVideoCount: z.number().int().nonnegative().default(0),
+  shotsWithFirstFrameCount: z.number().int().nonnegative().default(0),
+  shotsWithVideoCount: z.number().int().nonnegative().default(0),
+  videoVariantCount: z.number().int().nonnegative().default(0),
   lastEpisodeNumber: z.number().int().positive().nullable(),
   lastSceneNumber: z.number().int().positive().nullable(),
   lastShotNumber: z.number().int().nonnegative(),
@@ -353,6 +406,7 @@ export type DetectedCharacter = z.infer<typeof DetectedCharacterSchema>;
 export type DetectedLocation = z.infer<typeof DetectedLocationSchema>;
 export type DetectedScene = z.infer<typeof DetectedSceneSchema>;
 export type DetectedShot = z.infer<typeof DetectedShotSchema>;
+export type VideoTechnical = z.infer<typeof VideoTechnicalSchema>;
 export type DetectedPrompt = z.infer<typeof DetectedPromptSchema>;
 export type DetectedCorrection = z.infer<typeof DetectedCorrectionSchema>;
 export type DetectedLooseItem = z.infer<typeof DetectedLooseItemSchema>;

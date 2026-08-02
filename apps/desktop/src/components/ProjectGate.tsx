@@ -25,7 +25,7 @@ export function ProjectGate() {
           al plano terminado.
         </h1>
         <p className="gate-copy">
-          FrameSync conserva la fuente original, propone una estructura
+          Storyboard Wana conserva la fuente original, propone una estructura
           revisable y organiza guion, continuidad y medios en una mesa de
           producción horizontal.
         </p>

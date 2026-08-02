@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Clock3,
   FileInput,
+  Files,
   FileSearch,
   RotateCcw,
   ShieldAlert,
@@ -11,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useMemo, useState } from "react";
 import type { AnalysisProposal } from "@framesync/contracts";
 import { useFrameSyncStore } from "../store";
@@ -136,11 +138,13 @@ export function SourcesView() {
     selectedSourceId,
     selectSource,
     analyzeSource,
+    rescanSource,
     reviewItem,
     approveAllCertain,
     createStoryboard,
     importReviewed,
     deleteSource,
+    importSourceFiles,
     production,
     busy,
   } = useFrameSyncStore();
@@ -156,15 +160,44 @@ export function SourcesView() {
     [selected, group],
   );
 
+  async function chooseSourceFiles() {
+    const selectedFiles = await open({
+      multiple: true,
+      directory: false,
+      title: "Agregar archivos a Fuentes",
+      filters: [
+        {
+          name: "Documentos y notas",
+          extensions: ["pdf", "txt", "md", "csv", "json"],
+        },
+      ],
+    });
+    if (!selectedFiles) return;
+    const paths = Array.isArray(selectedFiles)
+      ? selectedFiles
+      : [selectedFiles];
+    await importSourceFiles(paths);
+  }
+
   if (!selected) {
     return (
       <section className="empty-workspace">
         <FileInput size={32} />
         <h2>La bandeja está vacía</h2>
         <p>
-          Importá la captura demo desde Agregar o enviá una conversación con la
-          extensión de Edge.
+          Agregá uno o varios documentos para detectar y revisar sus planos.
         </p>
+        <button
+          className="solid-button"
+          onClick={() => void chooseSourceFiles()}
+          disabled={busy}
+        >
+          <Files size={15} />
+          {busy ? "Importando…" : "Agregar archivos fuente"}
+        </button>
+        <small>
+          PDF, TXT, MD, CSV y JSON. Podés seleccionar varios juntos.
+        </small>
       </section>
     );
   }
@@ -174,6 +207,10 @@ export function SourcesView() {
         (item) => item.reviewStatus === "approved",
       ).length
     : 0;
+  const isPdfSource = selected.capture.assets.some(
+    (asset) =>
+      asset.kind === "document" && asset.mimeType === "application/pdf",
+  );
   const targetHasImportedContent = deleteTarget
     ? [
         ...production.scripts,
@@ -255,12 +292,25 @@ export function SourcesView() {
             </p>
           </div>
           <div className="titlebar-actions">
+            <button onClick={() => void chooseSourceFiles()} disabled={busy}>
+              <Files size={14} />
+              Agregar archivos
+            </button>
+            {isPdfSource && (
+              <button
+                onClick={() => void rescanSource(selected.capture.captureId)}
+                disabled={busy}
+              >
+                <FileSearch size={14} />
+                Reescanear PDF
+              </button>
+            )}
             <button
               onClick={() => void analyzeSource(selected.capture.captureId)}
               disabled={busy}
             >
               <RotateCcw size={14} />
-              {selected.proposal ? "Volver a analizar" : "1. Analizar fuente"}
+              {selected.proposal ? "Reanalizar texto" : "1. Analizar fuente"}
             </button>
             <button
               className="solid-button create-storyboard-button"

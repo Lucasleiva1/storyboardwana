@@ -40,6 +40,22 @@ describe("deterministic analysis engine", () => {
     ).toBe(true);
   });
 
+  it("keeps only the shots explicitly selected before capture import", () => {
+    const preview = analyzeCapture(DEMO_CAPTURE);
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.selectedShotIds = [preview.shots[1]!.id, preview.shots[4]!.id];
+
+    const selected = analyzeCapture(capture);
+
+    expect(selected.shots.map((shot) => shot.title)).toEqual([
+      preview.shots[1]!.title,
+      preview.shots[4]!.title,
+    ]);
+
+    capture.selectedShotIds = [];
+    expect(analyzeCapture(capture).shots).toHaveLength(0);
+  });
+
   it("extracts ChatGPT-style plain numbered shots and their prompt sections", () => {
     const capture = structuredClone(DEMO_CAPTURE);
     capture.captureId = "chatgpt-plain-shot-format";
@@ -102,6 +118,59 @@ Los nodos se alinean hasta construir el símbolo.`,
     ]);
     expect(result.shots[0]?.imagePrompt).toContain("fondo negro");
     expect(result.shots[0]?.videoPrompt).toContain("línea luminosa");
+  });
+
+  it("assigns PDF-style first-frame and video prompts to the current shot", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "pdf-shot-prompt-format";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "pdf-shot-prompt-message",
+        text: `ESCENA 1 — ROXWANA HOUSE DESPIERTA
+
+PLANO 1 — LA MANSIÓN FRENTE AL OCÉANO
+Duración 8 segundos
+Cámara Cámara virtual tipo ARRI Alexa 35, 24 mm anamórfico. Travelling frontal lento.
+Iluminación Amanecer azul y frío. Interior con luz ámbar tenue.
+Efectos El océano pulsa sutilmente con la primera nota.
+PRIMER FRAME
+Vista aérea amplia del océano antes del amanecer. La mansión aparece abajo.
+STORYBOARD / DESARROLLO
+1. La cámara desciende hacia la propiedad.
+PROMPT DE VIDEO
+Plano aéreo cinematográfico. La cámara FPV desciende suavemente desde el mar hacia la mansión.
+
+PLANO 2 — ENTRADA AL SALÓN
+Duración 6 segundos
+PRIMER FRAME
+Puerta monumental cerrada, encuadre frontal y simétrico.
+STORYBOARD / DESARROLLO
+1. La puerta comienza a abrirse.
+PROMPT DE VIDEO
+La puerta se abre y la cámara avanza lentamente hacia el interior.`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.shots.map((shot) => shot.code)).toEqual(["P001", "P002"]);
+    expect(result.shots[0]?.imagePrompt).toContain("Vista aérea amplia");
+    expect(result.shots[0]?.imagePrompt).not.toContain("STORYBOARD");
+    expect(result.shots[1]?.imagePrompt).toContain("Puerta monumental");
+    expect(result.videoPrompts).toHaveLength(2);
+    expect(result.videoPrompts[0]?.relatedShotCode).toBe("P001");
+    expect(result.videoPrompts[1]?.relatedShotCode).toBe("P002");
+    expect(result.shots[0]?.videoPrompt).toContain("cámara FPV");
+    expect(result.shots[1]?.videoPrompt).toContain("puerta se abre");
+    expect(result.shots[0]?.videoTechnical.camera).toContain("ARRI Alexa 35");
+    expect(result.shots[0]?.videoTechnical.lens).toBe("24 mm anamórfico");
+    expect(result.shots[0]?.videoTechnical.shotType).toBe("plano aéreo");
+    expect(result.shots[0]?.videoTechnical.movement).toContain("Travelling");
+    expect(result.shots[0]?.videoTechnical.lighting).toContain("Amanecer azul");
+    expect(result.shots[0]?.videoTechnical.effects).toContain("océano pulsa");
+    expect(result.shots[1]?.videoTechnical.camera).toBeNull();
   });
 
   it("keeps episodes and normalizes scene-local shot numbers globally", () => {
@@ -192,5 +261,125 @@ La misma acción desde otro ángulo.`,
       null,
     ]);
     expect(result.shots[2]?.variantOfShotNumber).toBe(1);
+  });
+
+  it("keeps only real technical shots, not templates, control lists, or filenames", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "ten-real-shots-with-noisy-references";
+    capture.messages = [
+      {
+        ...capture.messages[0]!,
+        id: "rules-message",
+        role: "user",
+        text: `REGLAS
+
+EPISODIO N — Título
+ESCENA N — Título
+P001 — Título del plano
+DESCRIPCIÓN VISUAL: ...
+ACCIÓN: ...
+DURACIÓN: ... s`,
+      },
+      {
+        ...capture.messages[1]!,
+        id: "answer-message",
+        role: "assistant",
+        text: `INICIO_CONTENIDO_FRAMESYNC
+TOTAL_PLANOS_A_CARGAR: 10
+RANGO_PLANOS_A_CARGAR: P001-P010
+
+EPISODIO 1 — Marca
+ESCENA 1 — Inicio
+
+${Array.from(
+  { length: 10 },
+  (
+    _,
+    index,
+  ) => `P${String(index + 1).padStart(3, "0")} — Plano real ${index + 1}
+DESCRIPCIÓN VISUAL: Acción narrativa completa del plano ${index + 1}.
+DURACIÓN: 4 s`,
+).join("\n\n")}
+
+CONTROL FINAL DE NUMERACIÓN
+
+P001
+P002
+P003
+P004
+P005
+P006
+P007
+P008
+P009
+P010
+
+ARCHIVOS RESULTANTES
+
+P001_PRIMER_FRAME.png
+P001_STORYBOARD.png
+P001_VIDEO_V01.mp4
+FIN_CONTENIDO_FRAMESYNC`,
+      },
+      {
+        ...capture.messages[2]!,
+        id: "filename-question",
+        role: "user",
+        text: `P001_PRIMER_FRAME.png
+P001_STORYBOARD.png
+P001_VIDEO_V01.mp4
+¿Qué son estos archivos?`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = capture.messages.length;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.episodes.map((episode) => episode.code)).toEqual(["EP01"]);
+    expect(result.scenes.map((scene) => scene.code)).toEqual(["E01"]);
+    expect(result.shots).toHaveLength(10);
+    expect(result.shots.map((shot) => shot.code)).toEqual(
+      Array.from(
+        { length: 10 },
+        (_, index) => `P${String(index + 1).padStart(3, "0")}`,
+      ),
+    );
+    expect(result.shots.map((shot) => shot.title)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `Plano real ${index + 1}`),
+    );
+  });
+
+  it("enforces the declared range when an AI emits extra real shot blocks", () => {
+    const capture = structuredClone(DEMO_CAPTURE);
+    capture.captureId = "declared-shot-range";
+    capture.messages = [
+      {
+        ...capture.messages[1]!,
+        id: "range-answer",
+        role: "assistant",
+        text: `INICIO_CONTENIDO_FRAMESYNC
+TOTAL_PLANOS_A_CARGAR: 10
+RANGO_PLANOS_A_CARGAR: P001-P010
+ESCENA 1 — Única
+
+${Array.from(
+  { length: 20 },
+  (_, index) => `P${String(index + 1).padStart(3, "0")} — Bloque ${index + 1}
+DESCRIPCIÓN VISUAL: Contenido técnico narrativo válido ${index + 1}.`,
+).join("\n\n")}
+FIN_CONTENIDO_FRAMESYNC`,
+      },
+    ];
+    capture.diagnostics.detectedMessageCount = 1;
+
+    const result = analyzeCapture(capture);
+
+    expect(result.shots).toHaveLength(10);
+    expect(result.shots.at(-1)?.code).toBe("P010");
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "SHOTS_OUTSIDE_DECLARED_RANGE_IGNORED",
+      ),
+    ).toBe(true);
   });
 });

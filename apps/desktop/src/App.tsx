@@ -14,6 +14,7 @@ export function App() {
   const {
     bootstrap,
     pollInbox,
+    syncProjectWorkspace,
     ready,
     busy,
     error,
@@ -29,9 +30,13 @@ export function App() {
   useEffect(() => {
     if (!project) return;
     void pollInbox();
-    const interval = window.setInterval(() => void pollInbox(), 4_000);
+    void syncProjectWorkspace();
+    const interval = window.setInterval(() => {
+      void pollInbox();
+      void syncProjectWorkspace();
+    }, 8_000);
     return () => window.clearInterval(interval);
-  }, [project, pollInbox]);
+  }, [project, pollInbox, syncProjectWorkspace]);
 
   if (!ready) {
     return (
@@ -76,7 +81,7 @@ export function App() {
         <span>SQLITE · WAL</span>
         <i />
         <span>ANÁLISIS SIN NUBE</span>
-        <b>FrameSync 0.1.3</b>
+        <b>Storyboard Wana 0.1.3</b>
       </footer>
       {error && <ErrorToast message={error} onClose={clearError} />}
     </div>

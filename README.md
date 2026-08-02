@@ -1,6 +1,6 @@
-# FrameSync
+# Storyboard Wana
 
-FrameSync es una aplicación de escritorio local-first para convertir
+Storyboard Wana es una aplicación de escritorio local-first para convertir
 conversaciones y prompts audiovisuales en fuentes trazables, guiones,
 personajes, escenarios, escenas, planos y storyboards.
 
@@ -22,13 +22,13 @@ La instalación es por usuario y no requiere permisos de administrador.
 
 Después de instalar:
 
-1. Abrí **Configuración** en FrameSync.
+1. Abrí **Configuración** en Storyboard Wana.
 2. Pulsá **Preparar conexión**.
 3. Abrí la carpeta de la extensión.
 4. En `edge://extensions`, activá **Modo de desarrollador**.
 5. Elegí **Cargar descomprimida** y seleccioná la carpeta indicada.
 
-FrameSync registra automáticamente el host nativo en HKCU y mantiene un ID de
+Storyboard Wana registra automáticamente el host nativo en HKCU y mantiene un ID de
 extensión estable:
 
 ```text

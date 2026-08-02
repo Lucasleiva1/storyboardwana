@@ -1,9 +1,10 @@
 import {
   AnalysisProposalSchema,
   CaptureEnvelopeSchema,
+  VideoTechnicalSchema,
   type AnalysisProposal,
   type CaptureEnvelope,
-  type WorkspaceProjectSummary,
+  type VideoTechnical,
 } from "@framesync/contracts";
 import { invoke } from "@tauri-apps/api/core";
 import type DatabaseType from "@tauri-apps/plugin-sql";
@@ -75,66 +76,9 @@ export async function listProjects(): Promise<Project[]> {
   }));
 }
 
-type WorkspaceProjectRow = {
-  id: string;
-  project_number: number;
-  name: string;
-  description: string | null;
-  updated_at: string;
-  episode_count: number;
-  scene_count: number;
-  shot_count: number;
-  special_shot_count: number;
-  last_episode_number: number | null;
-  last_scene_number: number | null;
-  last_shot_number: number | null;
-};
-
 export async function publishWorkspaceContext() {
-  const db = await database();
-  if (!db || !isTauriRuntime()) return;
-  const rows = await db.select<WorkspaceProjectRow[]>(
-    `SELECT
-       project.id,
-       project.project_number,
-       project.name,
-       project.description,
-       project.updated_at,
-       (SELECT COUNT(*) FROM episodes episode WHERE episode.project_id = project.id) AS episode_count,
-       (SELECT COUNT(*) FROM scenes scene WHERE scene.project_id = project.id) AS scene_count,
-       (SELECT COUNT(*) FROM shots shot WHERE shot.project_id = project.id AND shot.shot_type = 'normal') AS shot_count,
-       (SELECT COUNT(*) FROM shots shot WHERE shot.project_id = project.id AND shot.shot_type = 'special') AS special_shot_count,
-       (SELECT MAX(episode.number) FROM episodes episode WHERE episode.project_id = project.id) AS last_episode_number,
-       (SELECT MAX(scene.number) FROM scenes scene WHERE scene.project_id = project.id) AS last_scene_number,
-       (SELECT MAX(shot.global_number) FROM shots shot WHERE shot.project_id = project.id AND shot.shot_type = 'normal') AS last_shot_number
-     FROM projects project
-     ORDER BY project.updated_at DESC`,
-  );
-  const projects: WorkspaceProjectSummary[] = rows.map((row) => {
-    const lastShotNumber = row.last_shot_number ?? 0;
-    return {
-      id: row.id,
-      projectNumber: row.project_number,
-      name: row.name,
-      description: row.description,
-      episodeCount: row.episode_count,
-      sceneCount: row.scene_count,
-      shotCount: row.shot_count,
-      specialShotCount: row.special_shot_count,
-      lastEpisodeNumber: row.last_episode_number,
-      lastSceneNumber: row.last_scene_number,
-      lastShotNumber,
-      nextShotNumber: lastShotNumber + 1,
-      updatedAt: row.updated_at,
-    };
-  });
-  await invoke("write_workspace_context", {
-    context: {
-      protocolVersion: 1,
-      generatedAt: new Date().toISOString(),
-      projects,
-    },
-  });
+  if (!isTauriRuntime()) return;
+  await invoke("refresh_workspace_context");
 }
 
 export async function saveProject(project: Project) {
@@ -226,7 +170,16 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
          id, project_id, platform, source_url, conversation_title, captured_at,
          capture_mode, status, fingerprint, raw_text, original_json, created_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11)
-       ON CONFLICT(id) DO NOTHING`,
+       ON CONFLICT(id) DO UPDATE SET
+         platform = excluded.platform,
+         source_url = excluded.source_url,
+         conversation_title = excluded.conversation_title,
+         captured_at = excluded.captured_at,
+         capture_mode = excluded.capture_mode,
+         status = 'received',
+         fingerprint = excluded.fingerprint,
+         raw_text = excluded.raw_text,
+         original_json = excluded.original_json`,
     [
       capture.captureId,
       projectId,
@@ -247,7 +200,13 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
            id, capture_source_id, order_index, role, text, html_snapshot,
            message_fingerprint, source_dom_id, created_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT(id) DO NOTHING`,
+         ON CONFLICT(id) DO UPDATE SET
+           order_index = excluded.order_index,
+           role = excluded.role,
+           text = excluded.text,
+           html_snapshot = excluded.html_snapshot,
+           message_fingerprint = excluded.message_fingerprint,
+           source_dom_id = excluded.source_dom_id`,
       [
         message.id,
         capture.captureId,
@@ -299,7 +258,12 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
         `INSERT OR IGNORE INTO shot_assets (
            shot_id, asset_id, role, order_index
          )
-         SELECT shot.id, stored_asset.id, $1, 0
+         SELECT shot.id, stored_asset.id, $1,
+                COALESCE((
+                  SELECT MAX(existing.order_index) + 1
+                  FROM shot_assets existing
+                  WHERE existing.shot_id = shot.id AND existing.role = $1
+                ), 0)
          FROM shots shot
          JOIN assets stored_asset ON stored_asset.sha256 = $2
          WHERE shot.project_id = $3 AND shot.code = $4`,
@@ -309,7 +273,13 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
   }
   await db.execute(
     `INSERT OR IGNORE INTO shot_assets (shot_id, asset_id, role, order_index)
-     SELECT shot.id, asset.id, asset.role, 0
+     SELECT shot.id, asset.id, asset.role,
+            COALESCE((
+              SELECT MAX(existing.order_index) + 1
+              FROM shot_assets existing
+              WHERE existing.shot_id = shot.id
+                AND existing.role = asset.role
+            ), 0)
      FROM assets asset
      JOIN shots shot
        ON shot.project_id = asset.project_id
@@ -339,6 +309,7 @@ export async function saveCapture(projectId: string, capture: CaptureEnvelope) {
      WHERE project_id = $2`,
     [now, projectId],
   );
+  await publishWorkspaceContext();
 }
 
 function proposalItems(proposal: AnalysisProposal) {
@@ -402,6 +373,7 @@ export async function saveAnalysis(
     "UPDATE capture_sources SET status = 'analyzed' WHERE id = $1",
     [captureId],
   );
+  await publishWorkspaceContext();
 }
 
 export async function updateAnalysis(
@@ -421,16 +393,41 @@ export async function updateAnalysis(
      )`,
     [JSON.stringify(proposal), proposal.summary, captureId],
   );
-  for (const item of proposalItems(proposal)) {
+  const currentItems = proposalItems(proposal);
+  for (const item of currentItems) {
     await db.execute(
       "UPDATE detected_items SET review_status = $1, payload_json = $2 WHERE id = $3",
       [item.reviewStatus, JSON.stringify(item), item.id],
+    );
+  }
+  if (currentItems.length > 0) {
+    const placeholders = currentItems.map(() => "?").join(", ");
+    await db.execute(
+      `DELETE FROM detected_items
+       WHERE analysis_run_id = (
+         SELECT id FROM analysis_runs
+         WHERE capture_source_id = ?
+         ORDER BY started_at DESC LIMIT 1
+       )
+       AND id NOT IN (${placeholders})`,
+      [captureId, ...currentItems.map((item) => item.id)],
+    );
+  } else {
+    await db.execute(
+      `DELETE FROM detected_items
+       WHERE analysis_run_id = (
+         SELECT id FROM analysis_runs
+         WHERE capture_source_id = ?
+         ORDER BY started_at DESC LIMIT 1
+       )`,
+      [captureId],
     );
   }
   await db.execute("UPDATE capture_sources SET status = $1 WHERE id = $2", [
     status,
     captureId,
   ]);
+  await publishWorkspaceContext();
 }
 
 function shotContentValue(shot: {
@@ -444,6 +441,7 @@ function shotContentValue(shot: {
   dialogue: string | null;
   imagePrompt: string | null;
   videoPrompt: string | null;
+  videoTechnical: VideoTechnical;
 }) {
   return JSON.stringify([
     shot.title.trim(),
@@ -456,7 +454,17 @@ function shotContentValue(shot: {
     shot.dialogue?.trim() ?? null,
     shot.imagePrompt?.trim() ?? null,
     shot.videoPrompt?.trim() ?? null,
+    shot.videoTechnical,
   ]);
+}
+
+function parseVideoTechnical(value: string | null | undefined) {
+  try {
+    const parsed = value ? JSON.parse(value) : {};
+    return VideoTechnicalSchema.parse(parsed);
+  } catch {
+    return VideoTechnicalSchema.parse({});
+  }
 }
 
 function compactFingerprint(value: string) {
@@ -472,10 +480,19 @@ function compactFingerprint(value: string) {
     .padStart(8, "0")}`;
 }
 
+function scopedStorageId(
+  kind: "episode" | "scene" | "shot",
+  projectId: string,
+  detectedId: string,
+) {
+  return `${kind}-${compactFingerprint(`${projectId}\u0000${detectedId}`)}`;
+}
+
 export async function importApproved(
   projectId: string,
   captureId: string,
   proposal: AnalysisProposal,
+  options: { synchronizeSourceShots?: boolean } = {},
 ): Promise<ImportResult> {
   const db = await database();
   const result: ImportResult = {
@@ -509,10 +526,15 @@ export async function importApproved(
   );
   const approvedScenes = proposal.scenes.filter(
     (item) =>
-      item.reviewStatus === "approved" ||
-      (item.reviewStatus !== "rejected" &&
-        Boolean(item.code && requiredSceneCodes.has(item.code))),
+      Boolean(item.code) &&
+      (item.reviewStatus === "approved" ||
+        (item.reviewStatus !== "rejected" &&
+          Boolean(item.code && requiredSceneCodes.has(item.code)))),
   );
+
+  const retainedNormalNumbers = approvedShots
+    .filter((item) => item.shotType === "normal" && item.globalNumber !== null)
+    .map((item) => item.globalNumber!);
 
   for (const item of approvedScripts) {
     await db.execute(
@@ -551,7 +573,7 @@ export async function importApproved(
          ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         `${item.id}-v1`,
-        item.id,
+        scopedStorageId("episode", projectId, item.id),
         JSON.stringify(item.aliases),
         item.narrativeFunction,
         item.physicalDescription,
@@ -587,7 +609,7 @@ export async function importApproved(
          ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         `${item.id}-v1`,
-        item.id,
+        scopedStorageId("scene", projectId, item.id),
         item.description,
         item.atmosphere,
         item.lighting,
@@ -684,6 +706,7 @@ export async function importApproved(
   );
   type ExistingShotRow = {
     id: string;
+    source_capture_id: string | null;
     content_fingerprint: string | null;
     title: string;
     visual_description: string | null;
@@ -695,6 +718,7 @@ export async function importApproved(
     dialogue: string | null;
     image_prompt: string | null;
     video_prompt: string | null;
+    video_technical_json: string;
   };
   const maxRows = await db.select<Array<{ maximum: number }>>(
     `SELECT COALESCE(MAX(global_number), 0) AS maximum
@@ -725,15 +749,79 @@ export async function importApproved(
       if (!globalNumber) continue;
       code = `P${String(globalNumber).padStart(3, "0")}`;
       const existingRows = await db.select<ExistingShotRow[]>(
-        `SELECT id, content_fingerprint, title, visual_description, action,
+        `SELECT id, source_capture_id, content_fingerprint, title, visual_description, action,
                 framing, angle, movement, estimated_duration_ms, dialogue,
-                image_prompt, video_prompt
+                image_prompt, video_prompt, video_technical_json
          FROM shots
          WHERE project_id = $1 AND shot_type = 'normal' AND global_number = $2`,
         [projectId, globalNumber],
       );
       const existing = existingRows[0];
       if (existing) {
+        if (
+          options.synchronizeSourceShots &&
+          existing.source_capture_id === captureId
+        ) {
+          await db.execute(
+            `UPDATE shots SET
+               scene_id = $1,
+               source_capture_id = $2,
+               code = $3,
+               content_fingerprint = $4,
+               order_index = $5,
+               title = $6,
+               visual_description = $7,
+               action = $8,
+               framing = $9,
+               angle = $10,
+               movement = $11,
+               estimated_duration_ms = $12,
+               dialogue = $13,
+               image_prompt = $14,
+               video_prompt = $15,
+               video_technical_json = $16,
+               status = 'structured',
+               updated_at = $17
+             WHERE id = $18`,
+            [
+              matchingScene.id,
+              captureId,
+              code,
+              fingerprint,
+              globalNumber - 1,
+              item.title,
+              item.visualDescription,
+              item.action,
+              item.framing,
+              item.angle,
+              item.movement,
+              item.estimatedDurationMs,
+              item.dialogue,
+              item.imagePrompt,
+              item.videoPrompt,
+              JSON.stringify(item.videoTechnical),
+              now,
+              existing.id,
+            ],
+          );
+          await db.execute(
+            `INSERT INTO shot_import_events (
+               id, project_id, capture_source_id, detected_item_id, action,
+               global_number, shot_id, payload_json, created_at
+             ) VALUES ($1, $2, $3, $4, 'updated', $5, $6, $7, $8)`,
+            [
+              crypto.randomUUID(),
+              projectId,
+              captureId,
+              item.id,
+              globalNumber,
+              existing.id,
+              JSON.stringify(item),
+              now,
+            ],
+          );
+          continue;
+        }
         const existingFingerprint =
           existing.content_fingerprint ??
           compactFingerprint(
@@ -748,6 +836,9 @@ export async function importApproved(
               dialogue: existing.dialogue,
               imagePrompt: existing.image_prompt,
               videoPrompt: existing.video_prompt,
+              videoTechnical: parseVideoTechnical(
+                existing.video_technical_json,
+              ),
             }),
           );
         if (existingFingerprint === fingerprint) {
@@ -901,17 +992,17 @@ export async function importApproved(
       globalNumber = null;
     }
 
-    const shotId = item.id;
+    const shotId = scopedStorageId("shot", projectId, item.id);
     await db.execute(
       `INSERT INTO shots (
          id, project_id, scene_id, source_capture_id, code, global_number,
          shot_type, special_code, variant_of_shot_id, content_fingerprint,
          order_index, title, visual_description, action, framing, angle,
          movement, estimated_duration_ms, dialogue, image_prompt, video_prompt,
-         status, created_at, updated_at
+         video_technical_json, status, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-         $15, $16, $17, $18, $19, $20, $21, 'structured', $22, $22
+         $15, $16, $17, $18, $19, $20, $21, $22, 'structured', $23, $23
        )`,
       [
         shotId,
@@ -935,6 +1026,7 @@ export async function importApproved(
         item.dialogue,
         item.imagePrompt,
         item.videoPrompt,
+        JSON.stringify(item.videoTechnical),
         now,
       ],
     );
@@ -960,9 +1052,48 @@ export async function importApproved(
     );
   }
 
+  if (options.synchronizeSourceShots && retainedNormalNumbers.length > 0) {
+    const placeholders = retainedNormalNumbers.map(() => "?").join(", ");
+    await db.execute(
+      `DELETE FROM shots
+       WHERE project_id = ?
+         AND source_capture_id = ?
+         AND shot_type = 'normal'
+         AND global_number NOT IN (${placeholders})`,
+      [projectId, captureId, ...retainedNormalNumbers],
+    );
+  }
+  if (options.synchronizeSourceShots) {
+    const retainedSceneCodes = approvedScenes.flatMap((scene) => {
+      if (!scene.code) return [];
+      return [
+        scene.episodeCode ? `${scene.episodeCode}-${scene.code}` : scene.code,
+      ];
+    });
+    if (retainedSceneCodes.length > 0) {
+      const placeholders = retainedSceneCodes.map(() => "?").join(", ");
+      await db.execute(
+        `DELETE FROM scenes
+         WHERE project_id = ?
+           AND source_capture_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM shots shot WHERE shot.scene_id = scenes.id
+           )
+           AND (code IS NULL OR code NOT IN (${placeholders}))`,
+        [projectId, captureId, ...retainedSceneCodes],
+      );
+    }
+  }
+
   await db.execute(
     `INSERT OR IGNORE INTO shot_assets (shot_id, asset_id, role, order_index)
-     SELECT shot.id, asset.id, asset.role, 0
+     SELECT shot.id, asset.id, asset.role,
+            COALESCE((
+              SELECT MAX(existing.order_index) + 1
+              FROM shot_assets existing
+              WHERE existing.shot_id = shot.id
+                AND existing.role = asset.role
+            ), 0)
      FROM assets asset
      JOIN shots shot
        ON shot.project_id = asset.project_id
@@ -1031,11 +1162,43 @@ type ShotRow = {
   dialogue: string | null;
   image_prompt: string | null;
   video_prompt: string | null;
+  video_technical_json: string;
   status: ProductionShot["status"];
   source_capture_id: string | null;
   first_frame_path: string | null;
+  storyboard_paths_json: string;
   video_path: string | null;
+  video_paths_json: string;
   storyboard_asset_count: number;
+};
+
+type AssetRow = {
+  id: string;
+  kind: "image" | "video" | "document";
+  role:
+    | "storyboard"
+    | "first_frame"
+    | "last_frame"
+    | "reference"
+    | "video_final"
+    | "unassigned";
+  original_filename: string | null;
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  related_shot_code: string | null;
+  local_path: string | null;
+  sha256: string;
+  quality_source:
+    | "original"
+    | "largest_dom_candidate"
+    | "expanded_view"
+    | "screenshot_fallback"
+    | "local_file";
+  shot_code: string | null;
+  order_index: number | null;
 };
 
 export async function loadProduction(
@@ -1050,6 +1213,7 @@ export async function loadProduction(
       episodes: [],
       scenes: [],
       shots: [],
+      assets: [],
     };
   }
   const [
@@ -1059,6 +1223,7 @@ export async function loadProduction(
     episodeRows,
     sceneRows,
     shotRows,
+    assetRows,
   ] = await Promise.all([
     db.select<ScriptRow[]>(
       `SELECT script.id, version.title, version.text, version.source_capture_id
@@ -1113,7 +1278,8 @@ export async function loadProduction(
                 scene.code AS scene_code, shot.order_index,
                 shot.title, shot.visual_description, shot.action, shot.framing,
                 shot.angle, shot.movement, shot.estimated_duration_ms,
-                shot.dialogue, shot.image_prompt, shot.video_prompt, shot.status,
+                shot.dialogue, shot.image_prompt, shot.video_prompt,
+                shot.video_technical_json, shot.status,
                 shot.source_capture_id,
                 (
                   SELECT asset.local_path
@@ -1122,6 +1288,18 @@ export async function loadProduction(
                   WHERE link.shot_id = shot.id AND link.role = 'first_frame'
                   ORDER BY link.order_index LIMIT 1
                 ) AS first_frame_path,
+                COALESCE((
+                  SELECT json_group_array(storyboard.local_path)
+                  FROM (
+                    SELECT asset.local_path
+                    FROM shot_assets link
+                    JOIN assets asset ON asset.id = link.asset_id
+                    WHERE link.shot_id = shot.id
+                      AND link.role = 'storyboard'
+                      AND asset.local_path IS NOT NULL
+                    ORDER BY link.order_index, asset.created_at, asset.id
+                  ) storyboard
+                ), '[]') AS storyboard_paths_json,
                 (
                   SELECT asset.local_path
                   FROM shot_assets link
@@ -1129,6 +1307,18 @@ export async function loadProduction(
                   WHERE link.shot_id = shot.id AND link.role = 'video_final'
                   ORDER BY link.order_index LIMIT 1
                 ) AS video_path,
+                COALESCE((
+                  SELECT json_group_array(video.local_path)
+                  FROM (
+                    SELECT asset.local_path
+                    FROM shot_assets link
+                    JOIN assets asset ON asset.id = link.asset_id
+                    WHERE link.shot_id = shot.id
+                      AND link.role = 'video_final'
+                      AND asset.local_path IS NOT NULL
+                    ORDER BY link.order_index, asset.created_at, asset.id
+                  ) video
+                ), '[]') AS video_paths_json,
                 (
                   SELECT COUNT(*)
                   FROM shot_assets link
@@ -1142,6 +1332,24 @@ export async function loadProduction(
            CASE WHEN shot.global_number IS NULL THEN 1 ELSE 0 END,
            shot.global_number,
            shot.order_index`,
+      [projectId],
+    ),
+    db.select<AssetRow[]>(
+      `SELECT asset.id, asset.kind, asset.role, asset.original_filename,
+              asset.mime_type, asset.byte_size, asset.width, asset.height,
+              asset.duration_ms, asset.related_shot_code, asset.local_path,
+              asset.sha256, asset.quality_source, shot.code AS shot_code,
+              link.order_index
+       FROM assets asset
+       LEFT JOIN shot_assets link ON link.asset_id = asset.id
+       LEFT JOIN shots shot ON shot.id = link.shot_id
+       WHERE asset.project_id = $1
+       ORDER BY
+         CASE WHEN shot.global_number IS NULL THEN 1 ELSE 0 END,
+         shot.global_number,
+         link.role,
+         link.order_index,
+         asset.created_at`,
       [projectId],
     ),
   ]);
@@ -1222,14 +1430,56 @@ export async function loadProduction(
       dialogue: row.dialogue,
       imagePrompt: row.image_prompt,
       videoPrompt: row.video_prompt,
+      videoTechnical: parseVideoTechnical(row.video_technical_json),
       confidence: 1,
       extractionMethod: "manual",
       sourceMessageIds: row.source_capture_id ? [row.source_capture_id] : [],
       reviewStatus: "approved",
       status: row.status,
       firstFramePath: row.first_frame_path,
+      storyboardPaths: (() => {
+        try {
+          const parsed = JSON.parse(row.storyboard_paths_json) as unknown;
+          return Array.isArray(parsed)
+            ? parsed.filter(
+                (path): path is string => typeof path === "string" && !!path,
+              )
+            : [];
+        } catch {
+          return [];
+        }
+      })(),
       videoPath: row.video_path,
+      videoPaths: (() => {
+        try {
+          const parsed = JSON.parse(row.video_paths_json) as unknown;
+          return Array.isArray(parsed)
+            ? parsed.filter(
+                (path): path is string => typeof path === "string" && !!path,
+              )
+            : [];
+        } catch {
+          return row.video_path ? [row.video_path] : [];
+        }
+      })(),
       storyboardAssetCount: row.storyboard_asset_count,
+    })),
+    assets: assetRows.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      role: row.role,
+      originalFilename: row.original_filename,
+      mimeType: row.mime_type,
+      byteSize: row.byte_size,
+      width: row.width,
+      height: row.height,
+      durationMs: row.duration_ms,
+      relatedShotCode: row.related_shot_code,
+      localPath: row.local_path,
+      sha256: row.sha256,
+      qualitySource: row.quality_source,
+      shotCode: row.shot_code,
+      orderIndex: row.order_index,
     })),
   };
 }
@@ -1237,25 +1487,170 @@ export async function loadProduction(
 export async function updateShotRecord(shot: ProductionShot) {
   const db = await database();
   if (!db) return;
+  const contentFingerprint = compactFingerprint(shotContentValue(shot));
   await db.execute(
     `UPDATE shots SET
        title = $1,
        visual_description = $2,
-       framing = $3,
-       movement = $4,
-       estimated_duration_ms = $5,
-       status = $6,
-       updated_at = $7
-     WHERE id = $8`,
+       action = $3,
+       framing = $4,
+       angle = $5,
+       movement = $6,
+       estimated_duration_ms = $7,
+       dialogue = $8,
+       image_prompt = $9,
+       video_prompt = $10,
+       video_technical_json = $11,
+       status = $12,
+       content_fingerprint = $13,
+       updated_at = $14
+     WHERE id = $15`,
     [
       shot.title,
       shot.visualDescription,
+      shot.action,
       shot.framing,
+      shot.angle,
       shot.movement,
       shot.estimatedDurationMs,
+      shot.dialogue,
+      shot.imagePrompt,
+      shot.videoPrompt,
+      JSON.stringify(shot.videoTechnical),
       shot.status,
+      contentFingerprint,
       new Date().toISOString(),
       shot.id,
     ],
   );
+}
+
+export async function detachShotMediaRecord(
+  shotId: string,
+  role: "storyboard" | "first_frame" | "video_final",
+) {
+  const db = await database();
+  if (!db) return;
+  await db.execute(
+    `INSERT OR IGNORE INTO detached_shot_assets (shot_id, asset_id, role)
+     SELECT shot_id, asset_id, role FROM shot_assets
+      WHERE shot_id = $1 AND role = $2`,
+    [shotId, role],
+  );
+  await db.execute(
+    `DELETE FROM shot_assets WHERE shot_id = $1 AND role = $2`,
+    [shotId, role],
+  );
+  await db.execute(
+    `UPDATE shots SET
+       status = CASE
+         WHEN EXISTS (
+           SELECT 1 FROM shot_assets
+            WHERE shot_id = $1 AND role = 'first_frame'
+         ) THEN 'first_frame'
+         WHEN EXISTS (
+           SELECT 1 FROM shot_assets
+            WHERE shot_id = $1 AND role = 'storyboard'
+         ) THEN 'storyboard'
+         ELSE 'structured'
+       END,
+       updated_at = $2
+     WHERE id = $1`,
+    [shotId, new Date().toISOString()],
+  );
+}
+
+export async function deleteShotRecord(projectId: string, shotId: string) {
+  if (!isTauriRuntime()) return;
+  await invoke("delete_shot", { projectId, shotId });
+}
+
+export async function createManualShotRecords(
+  projectId: string,
+  names: string[],
+) {
+  const db = await database();
+  if (!db) return 0;
+  const cleanNames = names.map((name) => name.trim()).filter(Boolean);
+  if (cleanNames.length === 0) return 0;
+  type IdRow = { id: string };
+  type NumberRow = { value: number };
+  let scene = (
+    await db.select<IdRow[]>(
+      "SELECT id FROM scenes WHERE project_id = $1 AND code = 'MANUAL' LIMIT 1",
+      [projectId],
+    )
+  )[0];
+  const now = new Date().toISOString();
+  if (!scene) {
+    const sceneId = `manual-scene-${compactFingerprint(projectId)}`;
+    const orderRow = (
+      await db.select<NumberRow[]>(
+        "SELECT COALESCE(MAX(order_index), -1) + 1 AS value FROM scenes WHERE project_id = $1",
+        [projectId],
+      )
+    )[0];
+    await db.execute(
+      `INSERT INTO scenes (
+         id, project_id, source_capture_id, number, code, title, summary,
+         script_fragment, location_id, order_index, created_at, updated_at
+       ) VALUES ($1, $2, NULL, NULL, 'MANUAL', 'Storyboard manual',
+         'Planos agregados manualmente', NULL, NULL, $3, $4, $4)`,
+      [sceneId, projectId, orderRow?.value ?? 0, now],
+    );
+    scene = { id: sceneId };
+  }
+  const maxRow = (
+    await db.select<NumberRow[]>(
+      `SELECT COALESCE(MAX(global_number), 0) AS value
+       FROM shots WHERE project_id = $1 AND shot_type = 'normal'`,
+      [projectId],
+    )
+  )[0];
+  let nextNumber = (maxRow?.value ?? 0) + 1;
+  for (const name of cleanNames) {
+    const code = `P${String(nextNumber).padStart(3, "0")}`;
+    const shotId = crypto.randomUUID();
+    const fingerprint = compactFingerprint(
+      JSON.stringify([
+        name,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+      ]),
+    );
+    await db.execute(
+      `INSERT INTO shots (
+         id, scene_id, project_id, source_capture_id, code, global_number,
+         shot_type, special_code, variant_of_shot_id, order_index, title,
+         visual_description, action, framing, angle, movement,
+         estimated_duration_ms, dialogue, image_prompt, video_prompt, status,
+         content_fingerprint, created_at, updated_at
+       ) VALUES (
+         $1, $2, $3, NULL, $4, $5, 'normal', NULL, NULL, $6, $7,
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'incomplete',
+         $8, $9, $9
+       )`,
+      [
+        shotId,
+        scene.id,
+        projectId,
+        code,
+        nextNumber,
+        nextNumber - 1,
+        name,
+        fingerprint,
+        now,
+      ],
+    );
+    nextNumber += 1;
+  }
+  await publishWorkspaceContext();
+  return cleanNames.length;
 }

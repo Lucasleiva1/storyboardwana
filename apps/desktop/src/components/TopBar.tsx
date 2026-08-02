@@ -70,8 +70,8 @@ export function TopBar() {
             <ScanLine size={22} />
           </span>
           <div>
-            <strong>FRAMESYNC</strong>
-            <small>PRODUCTION DESK</small>
+            <strong>STORYBOARD WANA</strong>
+            <small>VISUAL PRODUCTION DESK</small>
           </div>
         </div>
 

@@ -11,6 +11,7 @@ import type {
   DetectedScene,
   DetectedScript,
   DetectedShot,
+  VideoTechnical,
 } from "@framesync/contracts";
 
 const sceneHeader = /^(?:ESCENA|SCENE)\b\s*(\d+)?\s*(?:[-—:]\s*)?(.+)?$/i;
@@ -40,7 +41,18 @@ const movementPattern =
   /^(?:MOVIMIENTO|MOVEMENT|C[ÁA]MARA|CAMERA)\s*:\s*(.+)$/i;
 const sceneLocationPattern = /^(?:ESCENARIO|LOCACI[ÓO]N|LOCATION)\s*:\s*(.+)$/i;
 const explicitHeaderPattern =
-  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE|CHARACTER|ESCENARIO|LOCACI[ÓO]N|LOCATION|EPISODIO|EPISODE|ESCENA|SCENE|PLANO\s+(?:\d+|ESPECIAL)|SHOT\s+(?:\d+|SPECIAL)|(?:P|SH)\d{1,4}|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|VARIANTE|VARIANT|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
+  /^(?:GUI[ÓO]N|SCRIPT|PERSONAJE(?=\s*:)|CHARACTER(?=\s*:)|ESCENARIO|LOCACI[ÓO]N|LOCATION|EPISODIO|EPISODE|ESCENA|SCENE|PLANO\s+(?:\d+|ESPECIAL)|SHOT\s+(?:\d+|SPECIAL)|(?:P|SH)\d{1,4}|(?:E|S)\d{1,3}-(?:P|SH)\d{1,3}|VARIANTE|VARIANT|PROMPT\s+DE\s+(?:IMAGEN|VIDEO)|(?:IMAGE|VIDEO)\s+PROMPT|NOTA|NOTE)\b/i;
+const mediaFilenamePattern =
+  /\b(?:P|SH)\d{1,4}_(?:PRIMER_FRAME|FIRST_FRAME|STORYBOARD|VIDEO(?:_V\d{1,3})?|LAST_FRAME)\.(?:png|jpe?g|webp|gif|mp4|mov|webm|avi|mkv)/i;
+const structuralTemplatePattern =
+  /^(?:EPISODIO|EPISODE|ESCENA|SCENE)\s+(?:N|X|#)\b/i;
+const shotTitlePlaceholderPattern =
+  /^(?:t[ií]tulo(?:\s+del\s+plano)?|shot\s+title|nombre(?:\s+del\s+plano)?)$/i;
+const framesyncStartMarker = "INICIO_CONTENIDO_FRAMESYNC";
+const framesyncEndMarker = "FIN_CONTENIDO_FRAMESYNC";
+const declaredShotCountPattern = /^TOTAL_PLANOS_A_CARGAR\s*:\s*(\d{1,4})\s*$/im;
+const declaredShotRangePattern =
+  /^RANGO_PLANOS_A_CARGAR\s*:\s*(?:P|SH)?(\d{1,4})\s*[-–—]\s*(?:P|SH)?(\d{1,4})\s*$/im;
 
 type ParsedBlock = {
   message: CaptureMessage;
@@ -58,6 +70,51 @@ function compact(value: string | undefined | null) {
   return normalized ? normalized : null;
 }
 
+function technicalMessageText(message: CaptureMessage) {
+  const start = message.text.indexOf(framesyncStartMarker);
+  if (start < 0) return message.text;
+  const contentStart = start + framesyncStartMarker.length;
+  const end = message.text.indexOf(framesyncEndMarker, contentStart);
+  return message.text.slice(contentStart, end < 0 ? undefined : end).trim();
+}
+
+function shotMatchTitle(...matches: Array<RegExpMatchArray | null>) {
+  for (const match of matches) {
+    const title = compact(match?.[2]);
+    if (title) return title;
+  }
+  return null;
+}
+
+function isSubstantiveShotBlock(block: ParsedBlock, title: string | null) {
+  if (mediaFilenamePattern.test(block.lines[0] ?? "")) return false;
+  const normalizedTitle = title?.replace(/[.…]+$/g, "").trim();
+  if (normalizedTitle && shotTitlePlaceholderPattern.test(normalizedTitle)) {
+    return false;
+  }
+  if (normalizedTitle) return true;
+
+  const bodyLines = block.lines.slice(1);
+  const hasTechnicalFields = bodyLines.some((line) =>
+    /^(?:DESCRIPCI[ÓO]N VISUAL|ACCI[ÓO]N|TIPO DE PLANO|ENCUADRE|[ÁA]NGULO|MOVIMIENTO|DURACI[ÓO]N|DI[ÁA]LOGO|CONTINUIDAD|PRIMER FRAME|PROMPT(?: PARA GENERAR)?|VIDEO|STORYBOARD)\b/i.test(
+      line,
+    ),
+  );
+  if (!hasTechnicalFields) return false;
+
+  const body = bodyLines
+    .join(" ")
+    .replace(
+      /\b(?:DESCRIPCI[ÓO]N VISUAL|ACCI[ÓO]N|TIPO DE PLANO|ENCUADRE|[ÁA]NGULO|MOVIMIENTO|DURACI[ÓO]N|DI[ÁA]LOGO|PRIMER FRAME|PROMPT(?: PARA GENERAR)?|VIDEO|STORYBOARD)\b\s*:?\s*/gi,
+      " ",
+    )
+    .replace(/(?:\.{2,}|…)/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+  return body.length >= 12;
+}
+
 function canonicalShotReference(value: string | undefined | null) {
   if (!value) return null;
   const match = value.match(/(?:(?:E|S)\d{1,3}-)?(?:P|SH)(\d{1,4})/i);
@@ -67,7 +124,7 @@ function canonicalShotReference(value: string | undefined | null) {
 
 function splitBlocks(capture: CaptureEnvelope): ParsedBlock[] {
   return capture.messages.flatMap((message) => {
-    const paragraphs = message.text
+    const paragraphs = technicalMessageText(message)
       .replace(/\r\n?/g, "\n")
       .split(/\n\s*\n+/)
       .map((paragraph) =>
@@ -125,6 +182,14 @@ function detectFraming(text: string) {
     "primer plano",
     "plano detalle",
     "plano cenital",
+    "plano aéreo",
+    "plano aereo",
+    "plano americano",
+    "plano entero",
+    "plano subjetivo",
+    "plano secuencia",
+    "macro cinematográfico",
+    "macro cinematografico",
     "close-up",
     "wide shot",
     "medium shot",
@@ -134,6 +199,118 @@ function detectFraming(text: string) {
     framingTerms.find((term) => text.toLocaleLowerCase("es").includes(term)) ??
     null
   );
+}
+
+const shotVideoFieldBoundary =
+  /^(?:TIEMPO DE MONTAJE|DURACI[ÓO]N|PERSONAJES?|UBICACI[ÓO]N|VESTUARIO|(?:VIDEO\s*[-—:]?\s*)?C[ÁA]MARA|(?:VIDEO\s*[-—:]?\s*)?(?:LENTE|[ÓO]PTICA)|(?:VIDEO\s*[-—:]?\s*)?TIPO DE PLANO|(?:VIDEO\s*[-—:]?\s*)?[ÁA]NGULO|(?:VIDEO\s*[-—:]?\s*)?MOVIMIENTO|(?:VIDEO\s*[-—:]?\s*)?ILUMINACI[ÓO]N|(?:VIDEO\s*[-—:]?\s*)?EFECTOS|(?:VIDEO\s*[-—:]?\s*)?TRANSICI[ÓO]N|(?:VIDEO\s*[-—:]?\s*)?INICIO|(?:VIDEO\s*[-—:]?\s*)?(?:DESARROLLO|PROGRESI[ÓO]N)|(?:VIDEO\s*[-—:]?\s*)?FINAL|CONTINUIDAD|CADENCIA|FPS|MUNDO ROXWANA|PRIMER FRAME|STORYBOARD|PROMPT DE VIDEO|MOVIMIENTO DEL VIDEO|--- PAGINA|•\s*•\s*•)\b/i;
+
+function labeledShotSection(lines: string[], label: RegExp) {
+  const start = lines.findIndex((line) => {
+    const match = line.match(label);
+    const inlineValue = match?.[1]?.trim();
+    return Boolean(match && !inlineValue?.match(/^[.,;]/));
+  });
+  if (start < 0) return null;
+  const firstMatch = lines[start]!.match(label);
+  const values = [compact(firstMatch?.[1])].filter(
+    (value): value is string => Boolean(value),
+  );
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (shotVideoFieldBoundary.test(line)) break;
+    values.push(line);
+  }
+  return compact(values.join(" "));
+}
+
+function detectLens(camera: string | null, explicitLens: string | null) {
+  if (explicitLens) return explicitLens;
+  if (!camera) return null;
+  const labeled = camera.match(
+    /\blente\s+([^.;]+?)(?=(?:\.|;|,\s*(?:travelling|slider|movimiento|paneo|dolly|zoom|retroceso|descenso|ascenso))|$)/i,
+  )?.[1];
+  if (labeled) return compact(labeled);
+  const focal = camera.match(
+    /\b((?:equivalente\s+a\s+)?\d{1,3}\s*mm(?:\s+anam[óo]rfico)?|split-diopter|fisheye|macro\s+perisc[óo]pico)\b/i,
+  )?.[1];
+  return compact(focal);
+}
+
+function detectVideoMovement(camera: string | null, explicit: string | null) {
+  if (explicit) return explicit;
+  if (!camera) return null;
+  const movement = camera.match(
+    /\b((?:travelling|slider|movimiento|paneo|tilt|dolly|zoom|retroceso|descenso|ascenso|acercamiento|alejamiento|rack focus)[^.;]*)/i,
+  )?.[1];
+  return compact(movement);
+}
+
+function extractVideoTechnical(
+  lines: string[],
+  videoPrompt: string | null,
+): VideoTechnical {
+  const legacyEnd = lines.findIndex((line) =>
+    /^(?:PRIMER FRAME|STORYBOARD|PROMPT DE VIDEO|MOVIMIENTO DEL VIDEO)\b/i.test(
+      line,
+    ),
+  );
+  const legacyLines = lines.slice(0, legacyEnd < 0 ? lines.length : legacyEnd);
+  const technicalSection = (explicit: RegExp, legacy?: RegExp) =>
+    labeledShotSection(lines, explicit) ??
+    (legacy ? labeledShotSection(legacyLines, legacy) : null);
+  const camera = technicalSection(
+    /^VIDEO\s*[-—:]?\s*C[ÁA]MARA\s*:?[\s]*(.*)$/i,
+    /^C[ÁA]MARA\s*:?[\s]*(.*)$/i,
+  );
+  const explicitLens = technicalSection(
+    /^VIDEO\s*[-—:]?\s*(?:LENTE|[ÓO]PTICA)\s*:?[\s]*(.*)$/i,
+    /^(?:LENTE|[ÓO]PTICA)\s*:?[\s]*(.*)$/i,
+  );
+  const explicitShotType = technicalSection(
+    /^VIDEO\s*[-—:]?\s*TIPO DE PLANO\s*:?[\s]*(.*)$/i,
+  );
+  const explicitAngle = technicalSection(
+    /^VIDEO\s*[-—:]?\s*[ÁA]NGULO\s*:?[\s]*(.*)$/i,
+  );
+  const explicitMovement = technicalSection(
+    /^VIDEO\s*[-—:]?\s*MOVIMIENTO(?:\s+DE\s+C[ÁA]MARA)?\s*:?[\s]*(.*)$/i,
+  );
+  return {
+    camera,
+    lens: detectLens(camera, explicitLens),
+    shotType:
+      explicitShotType ?? detectFraming([videoPrompt, camera].filter(Boolean).join(" ")),
+    angle:
+      explicitAngle ?? detectAngle([videoPrompt, camera].filter(Boolean).join(" ")),
+    movement: detectVideoMovement(camera, explicitMovement),
+    lighting: technicalSection(
+      /^VIDEO\s*[-—:]?\s*ILUMINACI[ÓO]N\s*:?[\s]*(.*)$/i,
+      /^ILUMINACI[ÓO]N\s*:?[\s]*(.*)$/i,
+    ),
+    effects: technicalSection(
+      /^VIDEO\s*[-—:]?\s*EFECTOS(?:\s+VISUALES)?\s*:?[\s]*(.*)$/i,
+      /^EFECTOS(?:\s+VISUALES)?\s*:?[\s]*(.*)$/i,
+    ),
+    transition: technicalSection(
+      /^VIDEO\s*[-—:]?\s*TRANSICI[ÓO]N\s*:?[\s]*(.*)$/i,
+      /^TRANSICI[ÓO]N\s*:?[\s]*(.*)$/i,
+    ),
+    start: technicalSection(
+      /^VIDEO\s*[-—:]?\s*INICIO(?:\s+DEL\s+VIDEO)?\s*:?[\s]*(.*)$/i,
+    ),
+    development: technicalSection(
+      /^VIDEO\s*[-—:]?\s*(?:DESARROLLO|PROGRESI[ÓO]N)(?:\s+DEL\s+VIDEO)?\s*:?[\s]*(.*)$/i,
+    ),
+    end: technicalSection(
+      /^VIDEO\s*[-—:]?\s*FINAL(?:\s+DEL\s+VIDEO)?\s*:?[\s]*(.*)$/i,
+    ),
+    continuity: technicalSection(
+      /^VIDEO\s*[-—:]?\s*CONTINUIDAD\s*:?[\s]*(.*)$/i,
+    ),
+    frameRate: technicalSection(
+      /^VIDEO\s*[-—:]?\s*(?:CADENCIA|FPS|FRAME RATE)\s*:?[\s]*(.*)$/i,
+    ),
+  };
 }
 
 function detectAngle(text: string) {
@@ -242,6 +419,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
 
   let currentEpisodeCode: string | null = null;
   let currentSceneCode: string | null = null;
+  let currentShotCode: string | null = null;
   let sequence = 0;
 
   for (let index = 0; index < blocks.length; index += 1) {
@@ -249,6 +427,13 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     if (!block) continue;
     const firstLine = block.lines[0] ?? "";
     sequence += 1;
+
+    if (
+      declaredShotCountPattern.test(firstLine) ||
+      declaredShotRangePattern.test(firstLine)
+    ) {
+      continue;
+    }
 
     const scriptMatch = firstLine.match(scriptHeader);
     if (scriptMatch) {
@@ -321,7 +506,11 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     }
 
     const episodeMatch = firstLine.match(episodeHeader);
-    if (episodeMatch && /^(?:EPISODIO|EPISODE)\b/i.test(firstLine)) {
+    if (
+      episodeMatch &&
+      /^(?:EPISODIO|EPISODE)\b/i.test(firstLine) &&
+      !structuralTemplatePattern.test(firstLine)
+    ) {
       const episodeNumber = episodeMatch[1]
         ? Number.parseInt(episodeMatch[1], 10)
         : episodes.length + 1;
@@ -343,7 +532,11 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     }
 
     const sceneMatch = firstLine.match(sceneHeader);
-    if (sceneMatch && /^(?:ESCENA|SCENE)\b/i.test(firstLine)) {
+    if (
+      sceneMatch &&
+      /^(?:ESCENA|SCENE)\b/i.test(firstLine) &&
+      !structuralTemplatePattern.test(firstLine)
+    ) {
       const sceneNumber = sceneMatch[1]
         ? Number.parseInt(sceneMatch[1], 10)
         : null;
@@ -381,12 +574,20 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
     const codedShotMatch = firstLine.match(codedShotHeader);
     const directShotMatch = firstLine.match(directShotHeader);
     const plainShotMatch = firstLine.match(plainShotHeader);
+    const candidateShotTitle = shotMatchTitle(
+      specialShotMatch,
+      variantShotMatch,
+      codedShotMatch,
+      directShotMatch,
+      plainShotMatch,
+    );
     if (
-      specialShotMatch ||
-      variantShotMatch?.[1] ||
-      codedShotMatch?.[1] ||
-      directShotMatch?.[1] ||
-      plainShotMatch?.[1]
+      (specialShotMatch ||
+        variantShotMatch?.[1] ||
+        codedShotMatch?.[1] ||
+        directShotMatch?.[1] ||
+        plainShotMatch?.[1]) &&
+      isSubstantiveShotBlock(block, candidateShotTitle)
     ) {
       const plainShotNumber = plainShotMatch?.[1]
         ? Number.parseInt(plainShotMatch[1], 10)
@@ -449,12 +650,13 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       currentSceneCode = sceneCodeFromShot ?? currentSceneCode;
       const sourceText = sourceLinesWithoutMetadata(block.lines);
       const fieldHeader =
-        /^(?:DURACI[ÓO]N|TIPO DE PLANO|C[ÁA]MARA|PRIMER FRAME|PROMPT PARA GENERAR|MOVIMIENTO DEL VIDEO|SONIDO|TRANSICI[ÓO]N|TEXTO|VOZ EN OFF)\b/i;
-      const imagePrompt = sectionText(
-        block.lines,
-        /^PROMPT PARA GENERAR (?:EL )?PRIMER FRAME$/i,
-        fieldHeader,
-      );
+        /^(?:DURACI[ÓO]N|TIPO DE PLANO|C[ÁA]MARA|PRIMER FRAME|PROMPT PARA GENERAR|PROMPT DE VIDEO|MOVIMIENTO DEL VIDEO|STORYBOARD|SONIDO|TRANSICI[ÓO]N|TEXTO|VOZ EN OFF)\b/i;
+      const imagePrompt =
+        sectionText(
+          block.lines,
+          /^PROMPT PARA GENERAR (?:EL )?PRIMER FRAME$/i,
+          fieldHeader,
+        ) ?? sectionText(block.lines, /^PRIMER FRAME$/i, fieldHeader);
       const videoPrompt = sectionText(
         block.lines,
         /^MOVIMIENTO DEL VIDEO$/i,
@@ -472,16 +674,7 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         episodeCode: currentEpisodeCode,
         sceneCode: currentSceneCode,
         orderIndex: shots.length,
-        title:
-          compact(
-            specialShotMatch?.[2] ??
-              variantShotMatch?.[2] ??
-              codedShotMatch?.[2] ??
-              directShotMatch?.[2] ??
-              plainShotMatch?.[2],
-          ) ??
-          code ??
-          "Plano especial",
+        title: candidateShotTitle ?? code ?? "Plano especial",
         visualDescription: compact(sourceText),
         action: compact(sourceText),
         framing: detectFraming(sourceText),
@@ -491,43 +684,55 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
         dialogue: compact(sourceText.match(/["“](.+?)["”]/)?.[1]) ?? null,
         imagePrompt,
         videoPrompt,
+        videoTechnical: extractVideoTechnical(block.lines, videoPrompt),
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
         reviewStatus: "pending",
       });
+      currentShotCode = code;
       continue;
     }
 
     const imagePromptMatch = firstLine.match(imagePromptHeader);
     if (imagePromptMatch) {
+      const relatedShotCode =
+        canonicalShotReference(imagePromptMatch[1]) ?? currentShotCode;
+      const text = block.lines.slice(1).join("\n").trim();
       imagePrompts.push({
         id: makeId("image-prompt", block.message, sequence),
         kind: "image_prompt",
         title: compact(imagePromptMatch[1]),
-        text: block.lines.slice(1).join("\n").trim(),
-        relatedShotCode: canonicalShotReference(imagePromptMatch[1]),
+        text,
+        relatedShotCode,
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
         reviewStatus: "pending",
       });
+      const relatedShot = shots.find((shot) => shot.code === relatedShotCode);
+      if (relatedShot && text) relatedShot.imagePrompt = text;
       continue;
     }
 
     const videoPromptMatch = firstLine.match(videoPromptHeader);
     if (videoPromptMatch) {
+      const relatedShotCode =
+        canonicalShotReference(videoPromptMatch[1]) ?? currentShotCode;
+      const text = block.lines.slice(1).join("\n").trim();
       videoPrompts.push({
         id: makeId("video-prompt", block.message, sequence),
         kind: "video_prompt",
         title: compact(videoPromptMatch[1]),
-        text: block.lines.slice(1).join("\n").trim(),
-        relatedShotCode: canonicalShotReference(videoPromptMatch[1]),
+        text,
+        relatedShotCode,
         confidence: 0.99,
         extractionMethod: "explicit",
         sourceMessageIds: [block.message.id],
         reviewStatus: "pending",
       });
+      const relatedShot = shots.find((shot) => shot.code === relatedShotCode);
+      if (relatedShot && text) relatedShot.videoPrompt = text;
       continue;
     }
 
@@ -575,6 +780,175 @@ export function analyzeCapture(capture: CaptureEnvelope): AnalysisProposal {
       sourceMessageIds: [block.message.id],
       reviewStatus: "needs_review",
     });
+  }
+
+  // PDF text extractors can split a shot when a metadata line begins with a
+  // structural word such as "PERSONAJE". Recover only missing prompt fields
+  // from the explicit PLANO N section without overwriting parsed/manual data.
+  for (const message of capture.messages) {
+    const lines = technicalMessageText(message)
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) => line.trim());
+    for (let index = 0; index < lines.length; index += 1) {
+      const shotMatch = lines[index]?.match(plainShotHeader);
+      if (!shotMatch?.[1]) continue;
+      const number = Number.parseInt(shotMatch[1], 10);
+      const nextShotOffset = lines
+        .slice(index + 1)
+        .findIndex((line) => plainShotHeader.test(line));
+      const end =
+        nextShotOffset < 0 ? lines.length : index + 1 + nextShotOffset;
+      const shotLines = lines.slice(index, end);
+      const shot = shots.find(
+        (candidate) =>
+          candidate.shotType === "normal" && candidate.globalNumber === number,
+      );
+      if (!shot) continue;
+      const promptBoundary =
+        /^(?:STORYBOARD|PROMPT DE VIDEO|MOVIMIENTO DEL VIDEO|ESCENA|PLANO\s+\d+|--- PAGINA)\b/i;
+      shot.imagePrompt ??= sectionText(
+        shotLines,
+        /^PRIMER FRAME$/i,
+        promptBoundary,
+      );
+      shot.videoPrompt ??= sectionText(
+        shotLines,
+        /^(?:PROMPT DE VIDEO|MOVIMIENTO DEL VIDEO)$/i,
+        /^(?:ESCENA|PLANO\s+\d+|--- PAGINA|•\s*•\s*•)/i,
+      );
+      const extractedTechnical = extractVideoTechnical(
+        shotLines,
+        shot.videoPrompt,
+      );
+      shot.videoTechnical = Object.fromEntries(
+        Object.entries(extractedTechnical).map(([key, value]) => [
+          key,
+          value ??
+            shot.videoTechnical[key as keyof VideoTechnical] ??
+            null,
+        ]),
+      ) as VideoTechnical;
+    }
+  }
+
+  const declarations = capture.messages
+    .flatMap((message) => {
+      const text = technicalMessageText(message);
+      const countMatch = text.match(declaredShotCountPattern);
+      const rangeMatch = text.match(declaredShotRangePattern);
+      if (!countMatch?.[1] && !rangeMatch?.[1]) return [];
+      return [
+        {
+          message,
+          count: countMatch?.[1] ? Number.parseInt(countMatch[1], 10) : null,
+          first: rangeMatch?.[1] ? Number.parseInt(rangeMatch[1], 10) : null,
+          last: rangeMatch?.[2] ? Number.parseInt(rangeMatch[2], 10) : null,
+        },
+      ];
+    })
+    .sort((left, right) => {
+      const roleDifference =
+        Number(left.message.role === "assistant") -
+        Number(right.message.role === "assistant");
+      return (
+        roleDifference || left.message.orderIndex - right.message.orderIndex
+      );
+    });
+  const declaration = declarations.at(-1);
+  if (declaration) {
+    const normalBeforeContract = shots.filter(
+      (shot) => shot.shotType === "normal",
+    );
+    if (
+      declaration.first !== null &&
+      declaration.last !== null &&
+      declaration.first <= declaration.last
+    ) {
+      const outsideRange = normalBeforeContract.filter(
+        (shot) =>
+          shot.globalNumber === null ||
+          shot.globalNumber < declaration.first! ||
+          shot.globalNumber > declaration.last!,
+      );
+      shots.splice(
+        0,
+        shots.length,
+        ...shots.filter(
+          (shot) =>
+            shot.shotType !== "normal" ||
+            (shot.globalNumber !== null &&
+              shot.globalNumber >= declaration.first! &&
+              shot.globalNumber <= declaration.last!),
+        ),
+      );
+      if (outsideRange.length > 0) {
+        warnings.push({
+          code: "SHOTS_OUTSIDE_DECLARED_RANGE_IGNORED",
+          message: `${outsideRange.length} referencias o bloques fuera del rango declarado no se cargarán como planos.`,
+          sourceMessageIds: outsideRange.flatMap(
+            (shot) => shot.sourceMessageIds,
+          ),
+        });
+      }
+    }
+
+    if (declaration.count !== null) {
+      const contractedNormals = shots.filter(
+        (shot) => shot.shotType === "normal",
+      );
+      if (contractedNormals.length > declaration.count) {
+        const acceptedIds = new Set(
+          contractedNormals.slice(0, declaration.count).map((shot) => shot.id),
+        );
+        const ignored = contractedNormals.slice(declaration.count);
+        shots.splice(
+          0,
+          shots.length,
+          ...shots.filter(
+            (shot) => shot.shotType !== "normal" || acceptedIds.has(shot.id),
+          ),
+        );
+        warnings.push({
+          code: "EXCESS_SHOTS_IGNORED",
+          message: `Se declararon ${declaration.count} planos y se detectaron ${contractedNormals.length}. Los excedentes quedaron bloqueados.`,
+          sourceMessageIds: ignored.flatMap((shot) => shot.sourceMessageIds),
+        });
+      } else if (contractedNormals.length < declaration.count) {
+        warnings.push({
+          code: "DECLARED_SHOT_COUNT_MISMATCH",
+          message: `Se declararon ${declaration.count} planos, pero sólo ${contractedNormals.length} contienen datos técnicos válidos. La importación necesita revisión.`,
+          sourceMessageIds: [declaration.message.id],
+        });
+      }
+    }
+  }
+
+  if (capture.selectedShotIds !== null) {
+    const selectedShotIds = new Set(capture.selectedShotIds);
+    const selectedShots = shots.filter((shot) => selectedShotIds.has(shot.id));
+    shots.splice(0, shots.length, ...selectedShots);
+    const selectedCodes = new Set(
+      selectedShots
+        .map((shot) => shot.code)
+        .filter((code): code is string => Boolean(code)),
+    );
+    imagePrompts.splice(
+      0,
+      imagePrompts.length,
+      ...imagePrompts.filter(
+        (prompt) =>
+          !prompt.relatedShotCode || selectedCodes.has(prompt.relatedShotCode),
+      ),
+    );
+    videoPrompts.splice(
+      0,
+      videoPrompts.length,
+      ...videoPrompts.filter(
+        (prompt) =>
+          !prompt.relatedShotCode || selectedCodes.has(prompt.relatedShotCode),
+      ),
+    );
   }
 
   const normalShots = shots.filter(
