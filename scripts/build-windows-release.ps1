@@ -95,14 +95,14 @@ try {
   Assert-SafeReleasePath $assetDirectory
   New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
 
-  $installerName = "FrameSync_${version}_x64-setup.exe"
+  $installerName = "Storyboard_Wana_${version}_x64-setup.exe"
   $installerAsset = Join-Path $assetDirectory $installerName
   $signatureAsset = "$installerAsset.sig"
   Copy-Item -LiteralPath $installer.FullName -Destination $installerAsset -Force
   Copy-Item -LiteralPath $signatureSource -Destination $signatureAsset -Force
 
   $extensionSource = Join-Path $repositoryRoot "apps\extension\.output\chrome-mv3"
-  $extensionAsset = Join-Path $assetDirectory "FrameSync-Capture_${version}.zip"
+  $extensionAsset = Join-Path $assetDirectory "Storyboard_Wana_Capture_${version}.zip"
   Assert-SafeReleasePath $extensionAsset
   if (Test-Path -LiteralPath $extensionAsset) {
     Remove-Item -LiteralPath $extensionAsset -Force

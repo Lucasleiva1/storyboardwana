@@ -11,4 +11,5 @@ Este archivo registra los puntos estables publicados en GitHub para poder identi
 - Hora local del guardado: 22:45:49 (`America/Buenos_Aires`, UTC-3)
 - Rama: `main`
 - Estado: estable
+- Instalador de escritorio: `Storyboard_Wana_0.1.4_x64-setup.exe`
 - Contenido principal: flujo manual de planos, importación y reescaneo de PDF, tarjetas horizontales de storyboard/primer frame/video, administración local de medios, prompts editables, reverso técnico de video y acceso directo de escritorio.
